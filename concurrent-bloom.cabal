@@ -53,6 +53,8 @@ test-suite tests
   if flag(dev)
       buildable: True
       build-depends:       base
+                         , QuickCheck
+                         , concurrent-bloomfilter
   else 
       buildable: False
 
@@ -67,5 +69,6 @@ benchmark bench
       buildable: True
       build-depends:   base
                      , criterion
+                     , concurrent-bloomfilter
   else 
       buildable: False

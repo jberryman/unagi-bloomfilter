@@ -1,17 +1,23 @@
-{-# LANGUAGE BangPatterns, RecordWildCards #-}
+{-# LANGUAGE BangPatterns, RecordWildCards, CPP #-}
 module Control.Concurrent.BloomFilter.Internal (
       new
     , BloomFilter(..)
+    , insert
+    , Control.Concurrent.BloomFilter.Internal.lookup
     , SipKey(..)
     , fpr
+
+# ifdef EXPORT_INTERNALS
+  -- * Internal functions exposed for testing; you shouldn't see these
+    , membershipWordAndBits64
+    , maskLog2wRightmostBits
+    , log2w
+    , unsafeSetBit
+    , isHash64Enough
+# endif
     )
     where
-    -- new
-    -- insert, returning success/failure
-    -- query
-    -- false positive rate for a particular size
-    -- required size for desired FPR
-    --
+
 -- Operations:
 --   - serialize/deserialize
 --     - don't store the secret key, but perhaps store a hash of the key for
@@ -82,10 +88,12 @@ module Control.Concurrent.BloomFilter.Internal (
 import Data.Bits
 import qualified Data.Primitive.ByteArray as P
 import Data.Primitive.MachDeps
+import Data.Atomics
+import Data.Hashabler
 import Control.Monad.Primitive(RealWorld)
 import Control.Exception(assert)
 import Control.Monad
-import Data.Hashabler
+import Data.Word(Word64)
 
 -- TODO
 --   Maybe we should assume bloom parameters will be static
@@ -139,9 +147,11 @@ And assuming we only have 128 hash bits, we can have max:
 -- | A mutable bloom filter representing a set of 'Hashable' values of type @a@.
 data BloomFilter a = BloomFilter { key :: !SipKey
                                  , k :: !Int
+                                 , hash64Enough :: Bool
+                                 -- ^ if we need no more than 64-bits we can use the faster 'siphash64'
                                  , l_minus1 :: !Int
                                  -- ^ For fast modulo
-                                 , l' :: !Int
+                                 , log2l :: !Int
                                  , arr :: !(P.MutableByteArray RealWorld)
                                  }
 
@@ -164,28 +174,88 @@ new :: SipKey
     -> Int
     -- ^ @k@: Number of independent bits of @w@ to which we map an element. 3 is a good choice.
     -> Int
-    -- ^ @l'@: The size of the filter, in machine words, as a power of 2.
+    -- ^ @log2l@: The size of the filter, in machine words, as a power of 2.
     -> IO (BloomFilter a)
-new key k l' = do
+new key k log2l = do
     -- In typed interface all of these conditions hold:
-    unless (l' >= 0) $ error "in 'new', l' must be >= 0"
+    unless (log2l >= 0) $ error "in 'new', log2l must be >= 0"
     unless (k > 0) $ error "in 'new', k must be > 0"
     -- TODO make sure parameters fit into 64 or 128 bits; maybe need a different func for 'fast' version fitting in 64-bits
 
-    let sizeBytes = sIZEOF_INT `unsafeShiftL` l'
+    let sizeBytes = sIZEOF_INT `unsafeShiftL` log2l
+        hash64Enough = isHash64Enough log2l k
     arr <- P.newAlignedPinnedByteArray sizeBytes aLIGNMENT_INT
     P.fillByteArray arr 0 sizeBytes (0x00)
 
-    return $ BloomFilter { l_minus1 = (2^l')-1, .. }
+    return $ BloomFilter { l_minus1 = (2^log2l)-1, .. }
 
+-- TODO unit test with a few made-up hashes and different k
+-- We assume 64-bits is enough:
+membershipWordAndBits64 :: Hash64 a -> BloomFilter a -> (Int, Int)
+{-# INLINE membershipWordAndBits64 #-}
+membershipWordAndBits64 (Hash64 h) (BloomFilter{ .. }) =
+  assert (isHash64Enough log2l k) $
+    -- Use leftmost bits for membership word, and take member bits from right
+    let !memberWord = fromIntegral (h `unsafeShiftR` (64-(fromIntegral log2l))) -- TODO or store 64-fromIntegral log2l ?
+        -- TODO benchmark INLINE, and unrolling by hand.
+        loop :: Int -> Int -> Word64 -> Int
+        loop !wd 0 _ = wd
+        loop !wd !k' !h' =
+               -- possible cast to 32-bit Int but we only need rightmost 5 or 6
+          let !memberBit = (fromIntegral h') .&. maskLog2wRightmostBits
+           in loop (wd `unsafeSetBit` memberBit) (k'-1) (h' `unsafeShiftR` log2w)
+        !wordToOr = loop 0x00 k h
+
+     in (memberWord, wordToOr)
+
+membershipWordAndBits128 :: Hash128 a -> BloomFilter a -> (Int, Int)
+{-# INLINE membershipWordAndBits128 #-}
+membershipWordAndBits128 (Hash128 h_0 h_1) (BloomFilter{ .. }) = undefined
+
+-- true if we can get enough hash bits from a Word64, and a runtime check
+-- sanity check of our arguments to 'new'. This is probably in "enough for
+-- anyone" territory currently:
+isHash64Enough :: Int -> Int -> Bool
+isHash64Enough log2l k =
+    let bitsReqd = log2l + k*log2w
+     in if bitsReqd > 128
+          -- unreachable in typed interface:
+          then error "The passed parameters require over the maximum of 128 hash bits supported. Make sure: (log2l + k*(logBase 2 wordSizeInBits)) <= 128"
+          else if (log2l > 64)
+                 then error "You asked for (log2l > 64). We have no way to address memory in that range, and anyway that's way too big."
+                 else bitsReqd <= 64
+
+-- TODO unit test.
+maskLog2wRightmostBits :: Int -- 2^log2w - 1
+maskLog2wRightmostBits | sIZEOF_INT == 8 = 63
+                       | otherwise       = 31
+
+-- TODO unit test.
+log2w :: Int -- logBase 2 wordSizeInBits
+log2w | sIZEOF_INT == 8 = 6
+      | otherwise       = 5
+
+-- TODO quickcheck against setBit.
 unsafeSetBit :: Int -> Int -> Int
+{-# INLINE unsafeSetBit #-}
 unsafeSetBit x i = x .|. (1 `unsafeShiftL` i)
 
-insert :: Hashable a=> BloomFilter a -> a -> IO ()
-insert (BloomFilter { .. }) = \a-> do
-    -- take l' bits
-        -- assert num not out of range of words in arr
-    -- then k times, take log2w bits (5 or 6)
+-- | Atomically insert a new element into the bloom filter. This returns 'True'
+-- if the element did not exist before the insert, and 'False' if the element
+-- did already exist (subject to false-positives; see 'lookup').
+insert :: Hashable a=> BloomFilter a -> a -> IO Bool
+insert bloom@(BloomFilter{..}) = \a-> do
+    let (!memberWord, !wordToOr)
+         | hash64Enough =
+            let !h = siphash64 key a
+             in membershipWordAndBits64 h bloom
+         | otherwise =
+            let !h = siphash128 key a
+             in membershipWordAndBits128 h bloom
+    oldWord <- fetchOrIntArray arr memberWord wordToOr
+    return $! (oldWord .|. wordToOr) /= oldWord
+
+
 
 lookup :: Hashable a=> BloomFilter a -> a -> Bool
 lookup = undefined
@@ -220,9 +290,6 @@ This was done for false positive rates larger than 10-6
 -- stored in the Bloom filter are done, the average of the results should match
 -- the value provided by the following
 
--- | The false positive rate for a bloom-1 filter.
--- TODO only use either m or l, both here and in 'new'
--- TODO actually since this is so expensive, treat as a utility and pass in `w` as well.
 
 {-
 -- This is the corrected equation from 'Supplementary File: A Comment on “Fast
@@ -250,22 +317,6 @@ fpr nI lI kI =
                 (factorial (w-i) * factorial j * factorial (i-j))
             )
         )
--}
-{- Naive:
-fpr :: Int  -- ^ @n@: Number of elements in filter
-    -> Int  -- ^ @l@: Size of filter, in machine words (vs @m@ which is size in bits)
-    -> Int  -- ^ @k@: Number of bits to map an element to
-    -> Float
-fpr nI lI kI =
-  let w = 64 -- TODO word-size in bits
-      n = fromIntegral nI
-      l = fromIntegral lI
-      k = fromIntegral kI
-   in summation 0 n $ \x->
-        (combination n x) *
-        ((1/l) ** x) *
-        ((1 - (1/l)) ** (n-x)) *
-        ((1 - ((1 - 1/w) ** (x*k))) ** k)
 -}
 
 -- This is my attempt at translating the FPR equation from "Fast Bloom Filters
@@ -300,7 +351,8 @@ fpr nI lI kI wI =
     n = min 32000 (fromIntegral nI)
     l = fromIntegral lI * (n/fromIntegral nI)
 
-    k = fromIntegral kI ; w = fromIntegral wI
+    k = fromIntegral kI
+    w = fromIntegral wI
     e = exp 1
     --     / x \
     -- log \ y /
