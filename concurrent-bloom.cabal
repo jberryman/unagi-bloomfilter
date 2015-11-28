@@ -3,7 +3,7 @@
 
 name:                concurrent-bloomfilter
 version:             0.1.0.0
-synopsis:            A cache-efficient bloom filter, with a thread-safe interface
+synopsis:            A cache-efficient, concurrent bloom filter
 description:         TODO: dynamic, based on bloom-1 from "Fast Bloom Filters and Their Generalization" by Qiao, et al.
 homepage:            http://github.com/jberryman/concurrent-bloomfilter
 license:             BSD3
@@ -16,12 +16,56 @@ build-type:          Simple
 -- extra-source-files:  
 cabal-version:       >=1.10
 
+source-repository head
+  type:     git
+  location: https://github.com/jberryman/concurrent-bloomfilter.git
+
+Flag dev
+  Description: To build tests, executables and benchmarks do `configure -fdev --enable-tests` and run the built executables by hand (i.e. not with `cabal test` etc.; we put all our different executables in test-suite sections in order to hide their dependencies from hackage)
+  Default: False
+  -- TODO did this solve our issues with having executable sections and hackage deps?:
+  Manual: True
+
 library
+  if flag(dev)
+      CPP-Options:     -DEXPORT_INTERNALS
+
   exposed-modules:     Control.Concurrent.BloomFilter
+                     , Control.Concurrent.BloomFilter.Internal
   -- other-modules:       
   -- other-extensions:    
   build-depends:       base >=4.7 && <4.9
                      , atomic-primops >= 0.8
                      , primitive
+                     , hashabler >= 1.1
   hs-source-dirs:      src
   default-language:    Haskell2010
+  ghc-options: -Wall -fwarn-tabs -O2 -funbox-strict-fields
+
+test-suite tests
+  type: exitcode-stdio-1.0
+  default-language:    Haskell2010
+  hs-source-dirs:      tests
+  main-is:             Main.hs
+  -- other-modules:
+
+  ghc-options:         -Wall -O2 -threaded -funbox-strict-fields -fno-ignore-asserts
+  if flag(dev)
+      buildable: True
+      build-depends:       base
+  else 
+      buildable: False
+
+
+benchmark bench
+  type: exitcode-stdio-1.0
+  default-language:    Haskell2010
+  main-is:             Main.hs
+  ghc-options:         -Wall -O2 -threaded -funbox-strict-fields
+  hs-source-dirs:      benchmarks
+  if flag(dev)
+      buildable: True
+      build-depends:   base
+                     , criterion
+  else 
+      buildable: False
