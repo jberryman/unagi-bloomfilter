@@ -142,10 +142,17 @@ And assuming we only have 128 hash bits, we can have max:
     64 GB bloom, k = 15-16 max
 
 ...which gives us an FPR for different loads of:
-    
+
  -}
 
 -- | A mutable bloom filter representing a set of 'Hashable' values of type @a@.
+--
+-- A bloom filter is a set-like probabilistic hash-based data structure.
+-- Elements can be 'insert'-ed and queried for membership. The bloom filter
+-- takes a constant amount of memory regardless of the size and number of
+-- elements inserted, however as the bloom filter \"grows\" the likelihood of
+-- false-positives being returned by 'lookup' increases. 'fpr' can be used to
+-- calculate the expected false-positive rate.
 data BloomFilter a = BloomFilter { key :: !SipKey
                                  , k :: !Int
                                  , hash64Enough :: Bool
@@ -190,7 +197,6 @@ new key k log2l = do
 
     return $ BloomFilter { l_minus1 = (2^log2l)-1, .. }
 
--- TODO unit test with a few made-up hashes and different k
 -- We assume 64-bits is enough:
 membershipWordAndBits64 :: Hash64 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits64 #-}
@@ -203,7 +209,7 @@ membershipWordAndBits64 (Hash64 h) (BloomFilter{ .. }) =
         loop !wd 0 _ = wd
         loop !wd !k' !h' =
                -- possible cast to 32-bit Int but we only need rightmost 5 or 6
-          let !memberBit = (fromIntegral h') .&. maskLog2wRightmostBits
+          let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits
            in loop (wd `unsafeSetBit` memberBit) (k'-1) (h' `unsafeShiftR` log2w)
         !wordToOr = loop 0x00 k h
 
@@ -217,10 +223,8 @@ membershipWordAndBits128 (Hash128 h_0 h_1) (BloomFilter{ .. }) = undefined
 membershipWordAndBitsFor :: (Hashable a)=> BloomFilter a -> a -> (Int, Int)
 {-# INLINE membershipWordAndBitsFor #-}
 membershipWordAndBitsFor bloom@(BloomFilter{..}) a
-    | hash64Enough = let !h = siphash64 key a
-                      in membershipWordAndBits64 h bloom
-    | otherwise =    let !h = siphash128 key a
-                      in membershipWordAndBits128 h bloom
+    | hash64Enough = membershipWordAndBits64  (siphash64  key a) bloom
+    | otherwise    = membershipWordAndBits128 (siphash128 key a) bloom
 
 
 -- True if we can get enough hash bits from a Word64, and a runtime check
@@ -251,12 +255,15 @@ unsafeSetBit x i = x .|. (1 `unsafeShiftL` i)
 
 
 -- TODO test 1000 random fetch (assert false), insert and fetch (assert true) on sufficiently large tree.
+-- TODO test creation and unit inset lookup on very small trees (log2l = [0,1,2]).
 
 -- | Atomically insert a new element into the bloom filter.
 --
 -- This returns 'True' if the element /did not exist/ before the insert, and
 -- 'False' if the element did already exist (subject to false-positives; see
 -- 'lookup'). Note that this is reversed from @lookup@.
+--
+-- This operation is /O(size_of_element)/.
 insert :: Hashable a=> BloomFilter a -> a -> IO Bool
 {-# INLINE insert #-}
 insert bloom@(BloomFilter{..}) = \a-> do
@@ -265,12 +272,15 @@ insert bloom@(BloomFilter{..}) = \a-> do
     return $! (oldWord .|. wordToOr) /= oldWord
 
 -- | Look up the value in the bloom filter, returning 'True' if the element is
--- likely in the set, and 'False' if the element is /certainly not/ in the set.
+-- possibly in the set, and 'False' if the element is /certainly not/ in the
+-- set.
 --
 -- The likelihood that this returns 'True' on an element that was not
 -- previously 'insert'-ed depends on the parameters the filter was created
 -- with, and the number of elements already inserted. The 'fpr' function can
 -- help you estimate this.
+--
+-- This operation is /O(size_of_element)/.
 lookup :: Hashable a=> BloomFilter a -> a -> IO Bool
 {-# INLINE lookup #-}
 lookup bloom@(BloomFilter{..}) = \a-> do
