@@ -3,7 +3,7 @@ module Control.Concurrent.BloomFilter.Internal (
       new
     , BloomFilter(..)
     , insert
-    , Control.Concurrent.BloomFilter.Internal.lookup
+    , lookup
     , SipKey(..)
     , fpr
 
@@ -94,6 +94,7 @@ import Control.Monad.Primitive(RealWorld)
 import Control.Exception(assert)
 import Control.Monad
 import Data.Word(Word64)
+import Prelude hiding (lookup)
 
 -- TODO
 --   Maybe we should assume bloom parameters will be static
@@ -208,14 +209,25 @@ membershipWordAndBits64 (Hash64 h) (BloomFilter{ .. }) =
 
      in (memberWord, wordToOr)
 
+-- TODO unit test with a few made-up hashes and different k
 membershipWordAndBits128 :: Hash128 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits128 #-}
 membershipWordAndBits128 (Hash128 h_0 h_1) (BloomFilter{ .. }) = undefined
 
--- true if we can get enough hash bits from a Word64, and a runtime check
+membershipWordAndBitsFor :: (Hashable a)=> BloomFilter a -> a -> (Int, Int)
+{-# INLINE membershipWordAndBitsFor #-}
+membershipWordAndBitsFor bloom@(BloomFilter{..}) a
+    | hash64Enough = let !h = siphash64 key a
+                      in membershipWordAndBits64 h bloom
+    | otherwise =    let !h = siphash128 key a
+                      in membershipWordAndBits128 h bloom
+
+
+-- True if we can get enough hash bits from a Word64, and a runtime check
 -- sanity check of our arguments to 'new'. This is probably in "enough for
 -- anyone" territory currently:
 isHash64Enough :: Int -> Int -> Bool
+{-# INLINE isHash64Enough #-}
 isHash64Enough log2l k =
     let bitsReqd = log2l + k*log2w
      in if bitsReqd > 128
@@ -225,40 +237,46 @@ isHash64Enough log2l k =
                  then error "You asked for (log2l > 64). We have no way to address memory in that range, and anyway that's way too big."
                  else bitsReqd <= 64
 
--- TODO unit test.
 maskLog2wRightmostBits :: Int -- 2^log2w - 1
 maskLog2wRightmostBits | sIZEOF_INT == 8 = 63
                        | otherwise       = 31
 
--- TODO unit test.
 log2w :: Int -- logBase 2 wordSizeInBits
 log2w | sIZEOF_INT == 8 = 6
       | otherwise       = 5
 
--- TODO quickcheck against setBit.
 unsafeSetBit :: Int -> Int -> Int
 {-# INLINE unsafeSetBit #-}
 unsafeSetBit x i = x .|. (1 `unsafeShiftL` i)
 
--- | Atomically insert a new element into the bloom filter. This returns 'True'
--- if the element did not exist before the insert, and 'False' if the element
--- did already exist (subject to false-positives; see 'lookup').
+
+-- TODO test 1000 random fetch (assert false), insert and fetch (assert true) on sufficiently large tree.
+
+-- | Atomically insert a new element into the bloom filter.
+--
+-- This returns 'True' if the element /did not exist/ before the insert, and
+-- 'False' if the element did already exist (subject to false-positives; see
+-- 'lookup'). Note that this is reversed from @lookup@.
 insert :: Hashable a=> BloomFilter a -> a -> IO Bool
+{-# INLINE insert #-}
 insert bloom@(BloomFilter{..}) = \a-> do
-    let (!memberWord, !wordToOr)
-         | hash64Enough =
-            let !h = siphash64 key a
-             in membershipWordAndBits64 h bloom
-         | otherwise =
-            let !h = siphash128 key a
-             in membershipWordAndBits128 h bloom
+    let (!memberWord, !wordToOr) = membershipWordAndBitsFor bloom a
     oldWord <- fetchOrIntArray arr memberWord wordToOr
     return $! (oldWord .|. wordToOr) /= oldWord
 
-
-
-lookup :: Hashable a=> BloomFilter a -> a -> Bool
-lookup = undefined
+-- | Look up the value in the bloom filter, returning 'True' if the element is
+-- likely in the set, and 'False' if the element is /certainly not/ in the set.
+--
+-- The likelihood that this returns 'True' on an element that was not
+-- previously 'insert'-ed depends on the parameters the filter was created
+-- with, and the number of elements already inserted. The 'fpr' function can
+-- help you estimate this.
+lookup :: Hashable a=> BloomFilter a -> a -> IO Bool
+{-# INLINE lookup #-}
+lookup bloom@(BloomFilter{..}) = \a-> do
+    let (!memberWord, !wordToOr) = membershipWordAndBitsFor bloom a
+    oldWord <- P.readByteArray arr memberWord
+    return $! (oldWord .|. wordToOr) /= oldWord
 
 
 {-

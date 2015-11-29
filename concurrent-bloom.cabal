@@ -55,6 +55,7 @@ test-suite tests
       build-depends:       base
                          , QuickCheck
                          , concurrent-bloomfilter
+                         , primitive
   else 
       buildable: False
 
