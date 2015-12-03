@@ -72,5 +72,6 @@ benchmark bench
       build-depends:   base
                      , criterion
                      , concurrent-bloomfilter
+                     , hashabler
   else 
       buildable: False

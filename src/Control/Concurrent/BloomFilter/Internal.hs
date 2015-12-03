@@ -163,6 +163,17 @@ data BloomFilter a = BloomFilter { key :: !SipKey
                                  , arr :: !(P.MutableByteArray RealWorld)
                                  }
 
+
+{- TYPED 'new':
+ -   - parameterize by: k, log2l, a
+ -   - keep 'key' in type? Awkward!
+ -     - maybe we can enforce only a single "implicit" 'key' value for entire
+ -        program using those singleton instance thingies? Then keep this out
+ -        of the type.
+ -   - constrain log2l <=64, and log2l+ k*log2w <=128 (or 64 for "fast" variant)
+ -}
+
+
 -- | Create a new bloom filter of elements of type @a@ with the given hash key
 -- and parameters. 'fpr' can be useful for calculating the @k@ parameter, or
 -- determining a good filter size.
@@ -197,18 +208,32 @@ new key k log2l = do
 
     return $ BloomFilter { l_minus1 = (2^log2l)-1, .. }
 
--- We assume 64-bits is enough:
 membershipWordAndBits64 :: Hash64 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits64 #-}
-membershipWordAndBits64 (Hash64 h) (BloomFilter{ .. }) =
+membershipWordAndBits64 !(Hash64 h) = \ !(BloomFilter{ .. }) ->
   assert (isHash64Enough log2l k) $
     -- Use leftmost bits for membership word, and take member bits from right
-    let !memberWord = fromIntegral (h `unsafeShiftR` (64-(fromIntegral log2l))) -- TODO or store 64-fromIntegral log2l ?
-        -- TODO benchmark INLINE, and unrolling by hand.
+    let !memberWord = fromIntegral (h `unsafeShiftR` (64-log2l))
+        -- TODO benchmark this in context of a lookup.
+        {- UNROLLED for 3
+        loop :: Int -> Int -> Word64 -> Int
+        loop !wd 3 !h' =
+            -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
+          let !b0 = fromIntegral h' .&. maskLog2wRightmostBits
+              !b1 = fromIntegral (h' `unsafeShiftR` log2w) .&. maskLog2wRightmostBits
+              !b2 = fromIntegral (h' `unsafeShiftR` (log2w*2)) .&. maskLog2wRightmostBits
+           in wd `unsafeSetBit` b0 `unsafeSetBit` b1 `unsafeSetBit` b2
+        loop !wd 0 _ = wd
+        loop !wd !k' !h' =
+            -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
+          let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits
+           in loop (wd `unsafeSetBit` memberBit) (k'-1) (h' `unsafeShiftR` log2w)
+           -}
+
         loop :: Int -> Int -> Word64 -> Int
         loop !wd 0 _ = wd
         loop !wd !k' !h' =
-               -- possible cast to 32-bit Int but we only need rightmost 5 or 6
+            -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
           let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits
            in loop (wd `unsafeSetBit` memberBit) (k'-1) (h' `unsafeShiftR` log2w)
         !wordToOr = loop 0x00 k h
