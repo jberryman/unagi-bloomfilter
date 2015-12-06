@@ -97,8 +97,6 @@ import Control.Monad
 import Data.Word(Word64)
 import Prelude hiding (lookup)
 
--- TODO DEBUGGING:
-import Debug.Trace
 
 -- TODO
 --   Maybe we should assume bloom parameters will be static
@@ -248,10 +246,10 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
         !lastMemberBitPart0 =
             -- clear left of range:
             ((h_0 `unsafeShiftL` log2l)
-            -- clear right of range:
-              `unsafeShiftR` (64 - (log2l+remainingBits_h_0)))
-            -- align for combining with lastMemberBitPart1:
-              `unsafeShiftL` bitsForLastMemberBit_h_1
+                -- clear right of range:
+                  `unsafeShiftR` (64 - remainingBits_h_0))
+                -- align for combining with lastMemberBitPart1:
+                  `unsafeShiftL` bitsForLastMemberBit_h_1
 
         -- ...and leftmost bits from h_1:
         !lastMemberBitPart1 = h_1 `unsafeShiftR` (64-bitsForLastMemberBit_h_1)
@@ -263,7 +261,6 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
                (kFor_h_1*log2w) <= 64  &&
                (kFor_h_0 + kFor_h_1 + 1) == k  &&
                (kFor_h_1*log2w + remainingBits_h_0 + kFor_h_1*log2w) <= 128) $
-         traceShow lastMemberBitPart0 $ traceShow lastMemberBitPart1 $
           (memberWord, wordToOr)
 
 setKMemberBits :: Int -> Int -> Word64 -> Int

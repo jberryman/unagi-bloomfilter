@@ -108,7 +108,7 @@ main = do
             error $ "membershipWordAndBits64-full memberWord: expected "++(show memberWordExpected)++" but got "++(show memberWordOut)
         unless (wordToOr == wordToOrExpected) $
             error $ "membershipWordAndBits64-full wordToOr: expected "++(show wordToOrExpected)++" but got "++(show wordToOr)
-{-
+
       -- repeat above, but with one bit more in `l` so we need a single bit from h_1 --------
       let membershipWord' = "10001" --17
           h' = (\(lastMemberBitPt, (lastMemberBitRest:ks))->
@@ -127,7 +127,7 @@ main = do
             error $ "membershipWordAndBitsJust128 memberWord: expected "++(show memberWordExpected)++" but got "++(show memberWordOut)
         unless (wordToOr == wordToOrExpected) $
             error $ "membershipWordAndBitsJust128 wordToOr: expected "++(show wordToOrExpected)++" but got "++(show wordToOr)
--}
+
 
       -- need exactly one k from h_1 --------
       --    log2l = 4 , k32 = 13 , k64 = 11
