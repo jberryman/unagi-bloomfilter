@@ -26,9 +26,18 @@ Flag dev
   -- TODO did this solve our issues with having executable sections and hackage deps?:
   Manual: True
 
+Flag instrumented
+  Description: Enables assertions in library code. When --enable-library-profiling and --enable-executable-profiling is turned on, you can get stacktraces as well
+  Default: False
+  Manual: True
+
 library
   if flag(dev)
       CPP-Options:     -DEXPORT_INTERNALS
+  if flag(instrumented)
+      ghc-options:      -fno-ignore-asserts
+      -- TODO stacktraces don't seem to show anything useful. Maybe because of INLINEs?:
+      ghc-prof-options: -fprof-auto -auto-all -caf-all "-with-rtsopts=-xc"
 
   exposed-modules:     Control.Concurrent.BloomFilter
                      , Control.Concurrent.BloomFilter.Internal
@@ -50,6 +59,11 @@ test-suite tests
   -- other-modules:
 
   ghc-options:         -Wall -O2 -threaded -funbox-strict-fields -fno-ignore-asserts
+  if flag(instrumented)
+      ghc-prof-options: -fprof-auto -auto-all -caf-all "-with-rtsopts=-xc"
+
+  if flag(instrumented)
+      CPP-Options:     -DASSERTIONS_ON
   if flag(dev)
       buildable: True
       build-depends:       base
@@ -67,6 +81,8 @@ benchmark bench
   main-is:             Main.hs
   ghc-options:         -Wall -O2 -threaded -funbox-strict-fields
   hs-source-dirs:      benchmarks
+  if flag(instrumented)
+      CPP-Options:     -DASSERTIONS_ON
   if flag(dev)
       buildable: True
       build-depends:   base

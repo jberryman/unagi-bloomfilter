@@ -9,11 +9,12 @@ module Control.Concurrent.BloomFilter.Internal (
 
 # ifdef EXPORT_INTERNALS
   -- * Internal functions exposed for testing; you shouldn't see these
-    , membershipWordAndBits64
+    , membershipWordAndBits64, membershipWordAndBits128
     , maskLog2wRightmostBits
     , log2w
     , unsafeSetBit
     , isHash64Enough
+    , assertionCanary
 # endif
     )
     where
@@ -91,10 +92,13 @@ import Data.Primitive.MachDeps
 import Data.Atomics
 import Data.Hashabler
 import Control.Monad.Primitive(RealWorld)
-import Control.Exception(assert)
+import Control.Exception
 import Control.Monad
 import Data.Word(Word64)
 import Prelude hiding (lookup)
+
+-- TODO DEBUGGING:
+import Debug.Trace
 
 -- TODO
 --   Maybe we should assume bloom parameters will be static
@@ -173,6 +177,7 @@ data BloomFilter a = BloomFilter { key :: !SipKey
  -   - constrain log2l <=64, and log2l+ k*log2w <=128 (or 64 for "fast" variant)
  -}
 
+-- TODO change these 'error' to throw a different exception too.
 
 -- | Create a new bloom filter of elements of type @a@ with the given hash key
 -- and parameters. 'fpr' can be useful for calculating the @k@ parameter, or
@@ -214,36 +219,71 @@ membershipWordAndBits64 !(Hash64 h) = \ !(BloomFilter{ .. }) ->
   assert (isHash64Enough log2l k) $
     -- Use leftmost bits for membership word, and take member bits from right
     let !memberWord = fromIntegral (h `unsafeShiftR` (64-log2l))
-        -- TODO benchmark this in context of a lookup.
-        {- UNROLLED for 3
-        loop :: Int -> Int -> Word64 -> Int
-        loop !wd 3 !h' =
-            -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
-          let !b0 = fromIntegral h' .&. maskLog2wRightmostBits
-              !b1 = fromIntegral (h' `unsafeShiftR` log2w) .&. maskLog2wRightmostBits
-              !b2 = fromIntegral (h' `unsafeShiftR` (log2w*2)) .&. maskLog2wRightmostBits
-           in wd `unsafeSetBit` b0 `unsafeSetBit` b1 `unsafeSetBit` b2
-        loop !wd 0 _ = wd
-        loop !wd !k' !h' =
-            -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
-          let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits
-           in loop (wd `unsafeSetBit` memberBit) (k'-1) (h' `unsafeShiftR` log2w)
-           -}
 
-        loop :: Int -> Int -> Word64 -> Int
-        loop !wd 0 _ = wd
-        loop !wd !k' !h' =
-            -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
-          let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits
-           in loop (wd `unsafeSetBit` memberBit) (k'-1) (h' `unsafeShiftR` log2w)
-        !wordToOr = loop 0x00 k h
+        !wordToOr = setKMemberBits 0x00 k h
 
      in (memberWord, wordToOr)
 
 -- TODO unit test with a few made-up hashes and different k
 membershipWordAndBits128 :: Hash128 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits128 #-}
-membershipWordAndBits128 (Hash128 h_0 h_1) (BloomFilter{ .. }) = undefined
+membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
+  assert (not $ isHash64Enough log2l k) $
+    -- Use leftmost bits for membership word, and take member bits from right,
+    -- then taking remaining member bits from h_1 (from the right)
+    let !bitsLeftForMemberBits_h_0 = 64-log2l
+        !memberWord = fromIntegral (h_0 `unsafeShiftR` bitsLeftForMemberBits_h_0)
+        (!kFor_h_0, !remainingBits_h_0) = bitsLeftForMemberBits_h_0 `quotRem` log2w
+        !bitsForLastMemberBit_h_1 = log2w - remainingBits_h_0
+        -- Leaving one which we'll always build with (possibly 0)
+        -- remainingBits_h_0 and the leftmost bits from h_1:
+        !kFor_h_1 = (k - kFor_h_0) - 1
+
+
+        -- Fold in ks from h_0 (from right):
+        !wordToOrPart0 = setKMemberBits 0x00 kFor_h_0 h_0
+        -- Fold in ks from h_1 (from right):
+        !wordToOrPart1 = setKMemberBits 0x00 kFor_h_1 h_1
+        -- Build the final member bit with possible leftover bits from h_0
+        !lastMemberBitPart0 =
+            -- clear left of range:
+            ((h_0 `unsafeShiftL` log2l)
+            -- clear right of range:
+              `unsafeShiftR` (64 - (log2l+remainingBits_h_0)))
+            -- align for combining with lastMemberBitPart1:
+              `unsafeShiftL` bitsForLastMemberBit_h_1
+
+        -- ...and leftmost bits from h_1:
+        !lastMemberBitPart1 = h_1 `unsafeShiftR` (64-bitsForLastMemberBit_h_1)
+        !wordToOr = (wordToOrPart0.|.wordToOrPart1) `unsafeSetBit`
+                       fromIntegral (lastMemberBitPart0.|.lastMemberBitPart1)
+
+     in assert (kFor_h_1 >= 0 && -- we may only need a few to make up remainder.
+               (kFor_h_0*log2w) <= 64  &&
+               (kFor_h_1*log2w) <= 64  &&
+               (kFor_h_0 + kFor_h_1 + 1) == k  &&
+               (kFor_h_1*log2w + remainingBits_h_0 + kFor_h_1*log2w) <= 128) $
+         traceShow lastMemberBitPart0 $ traceShow lastMemberBitPart1 $
+          (memberWord, wordToOr)
+
+setKMemberBits :: Int -> Int -> Word64 -> Int
+{-# INLINE setKMemberBits #-}
+{- UNROLLED for 3
+-- TODO benchmark this in context of a lookup
+setKMemberBits !wd 3 !h' =
+    -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
+  let !b0 = fromIntegral h' .&. maskLog2wRightmostBits
+      !b1 = fromIntegral (h' `unsafeShiftR` log2w) .&. maskLog2wRightmostBits
+      !b2 = fromIntegral (h' `unsafeShiftR` (log2w*2)) .&. maskLog2wRightmostBits
+   in wd `unsafeSetBit` b0 `unsafeSetBit` b1 `unsafeSetBit` b2
+-}
+setKMemberBits !wd 0 _ = wd
+setKMemberBits !wd !k' !h' =
+    -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
+  let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits
+   in setKMemberBits (wd `unsafeSetBit` memberBit) (k'-1) (h' `unsafeShiftR` log2w)
+
+
 
 membershipWordAndBitsFor :: (Hashable a)=> BloomFilter a -> a -> (Int, Int)
 {-# INLINE membershipWordAndBitsFor #-}
@@ -251,6 +291,9 @@ membershipWordAndBitsFor bloom@(BloomFilter{..}) a
     | hash64Enough = membershipWordAndBits64  (siphash64  key a) bloom
     | otherwise    = membershipWordAndBits128 (siphash128 key a) bloom
 
+
+-- TODO test that we throw exceptions on bad inputs here, and make these proper
+-- exceptions (since we expect this to be thrown in the 'untyped' interface):
 
 -- True if we can get enough hash bits from a Word64, and a runtime check
 -- sanity check of our arguments to 'new'. This is probably in "enough for
@@ -276,7 +319,9 @@ log2w | sIZEOF_INT == 8 = 6
 
 unsafeSetBit :: Int -> Int -> Int
 {-# INLINE unsafeSetBit #-}
-unsafeSetBit x i = x .|. (1 `unsafeShiftL` i)
+unsafeSetBit x i =
+  assert (i >= 0 && i < (sIZEOF_INT*8)) $
+    x .|. (1 `unsafeShiftL` i)
 
 
 -- TODO test 1000 random fetch (assert false), insert and fetch (assert true) on sufficiently large tree.
@@ -465,3 +510,16 @@ nextHighestPowerOfTwo n
               nhp2
 
   where maxPowerOfTwo = (floor $ sqrt $ (fromIntegral (maxBound :: Int)::Float)) ^ (2::Int)
+
+
+# ifdef EXPORT_INTERNALS
+-- This could go anywhere, and lets us ensure that assertions are turned on
+-- when running test suite.
+assertionCanary :: IO Bool
+assertionCanary = do
+    assertionsWorking <- try $ assert False $ return ()
+    return $
+      case assertionsWorking of
+           Left (AssertionFailed _) -> True
+           _                        -> False
+# endif

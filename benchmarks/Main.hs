@@ -1,4 +1,8 @@
+{-# LANGUAGE CPP #-}
 module Main where
+#  ifdef ASSERTIONS_ON
+#    error "Sorry, please reconfigure without -finstrumented so that we turn off assertions in library code."
+#  endif
 
 import Criterion.Main
 
