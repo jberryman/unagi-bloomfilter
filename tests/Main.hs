@@ -86,7 +86,7 @@ main = do
     -- membershipWordAndBits128 --------
     do
       -- first test filling exactly 64-bits:
-      let membershipWord = "1001"
+      let membershipWord = "1001"  -- n.b. remaining bits divisible by log2w on both 32 and 64-bits
       let kFilling64 | wordSizeInBits == 64 = 10
                      | otherwise = 12
           memberBitsToSet = take kFilling64 [3..]
@@ -113,7 +113,7 @@ main = do
       let membershipWord' = "10001" --17
           h' = (\(lastMemberBitPt, (lastMemberBitRest:ks))->
                  let h_0 = fromBits64 (membershipWord'++lastMemberBitPt++ks)
-                     h_1 = fromBits64 (lastMemberBitRest : replicate 63 '0')
+                     h_1 = fromBits64 (lastMemberBitRest : replicate 63 '1') -- Ones to right ought to be ignored
                   in Hash128 h_0 h_1) $
                 splitAt (log2w-1) kPayload
       newJustNeeds128 <- Bloom.new (SipKey 1 1) kFilling64 (length membershipWord')
@@ -129,8 +129,29 @@ main = do
             error $ "membershipWordAndBitsJust128 wordToOr: expected "++(show wordToOrExpected)++" but got "++(show wordToOr)
 
 
-      -- need exactly one k from h_1 --------
-      --    log2l = 4 , k32 = 13 , k64 = 11
+      -- Now using h_1 for exactly the last k bits:
+      let kFilling64Plus1 | wordSizeInBits == 64 = 11
+                          | otherwise = 13
+          memberBitsToSet64Plus1 = take kFilling64Plus1 [6..]
+      assert (maximum memberBitsToSet64Plus1 <= (wordSizeInBits-1)) $ return ()
+      let kPayload64Plus1 = concatMap memberWordPaddedBinStr $ memberBitsToSet64Plus1
+      newNeedsExactly64Plus1 <- Bloom.new (SipKey 1 1) kFilling64Plus1 (length membershipWord)
+      assert (not $ hash64Enough newNeedsExactly64Plus1) $ return ()
+      do
+        let hPlus1 = 
+               (\(lastKForH1 , ksForH0)->
+                 let h_0 = fromBits64 (membershipWord++ksForH0)
+                     h_1 = fromBits64 (lastKForH1++(replicate (64-log2w) '1')) -- Ones to the right ought to be ignored
+                  in Hash128 h_0 h_1) $
+                splitAt log2w kPayload64Plus1
+        let wordToOrExpected' = foldl' setBit 0 memberBitsToSet64Plus1
+        let memberWordExpected = 9
+        let (memberWordOut, wordToOr) =
+               membershipWordAndBits128 hPlus1 newNeedsExactly64Plus1
+        unless (memberWordOut == memberWordExpected) $
+            error $ "membershipWordAndBits64-full memberWord: expected "++(show memberWordExpected)++" but got "++(show memberWordOut)
+        unless (wordToOr == wordToOrExpected') $
+            error $ "membershipWordAndBits64-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
       -- need all 128 bits --------
       --    log2l = 8 , k32 = 24, k64 = 20
 

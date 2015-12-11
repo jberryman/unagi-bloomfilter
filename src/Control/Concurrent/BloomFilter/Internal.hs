@@ -97,7 +97,6 @@ import Control.Monad
 import Data.Word(Word64)
 import Prelude hiding (lookup)
 
-
 -- TODO
 --   Maybe we should assume bloom parameters will be static
 --   then we can tag bloom filter with type-level numeric params
@@ -247,10 +246,9 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
             -- clear left of range:
             ((h_0 `unsafeShiftL` log2l)
                 -- clear right of range:
-                  `unsafeShiftR` (64 - remainingBits_h_0))
+                  `shiftR` (64 - remainingBits_h_0)) -- n.b. possible 64 shift
                 -- align for combining with lastMemberBitPart1:
                   `unsafeShiftL` bitsForLastMemberBit_h_1
-
         -- ...and leftmost bits from h_1:
         !lastMemberBitPart1 = h_1 `unsafeShiftR` (64-bitsForLastMemberBit_h_1)
         !wordToOr = (wordToOrPart0.|.wordToOrPart1) `unsafeSetBit`
@@ -491,7 +489,9 @@ fpr nI lI kI wI =
 --      (how do atomic operations and mmap relate?)
 
 
-
+-- TODO replace above with a version with assertions.
+-- uncheckedShiftR ::
+-- uncheckedShiftL ::
 
 -- Not particularly fast; if needs moar fast see
 --   http://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
