@@ -31,9 +31,9 @@ main = do
         error "fromBits64 helper borked"
 
 
-    -- unsafeSetBit: --------
+    -- uncheckedSetBit: --------
     quickCheckErr 10000 $ \(Large i) ->
-      all (\b-> ((i::Int) `setBit` b) == (i `unsafeSetBit` b))
+      all (\b-> ((i::Int) `setBit` b) == (i `uncheckedSetBit` b))
           [0.. wordSizeInBits-1]
 
 

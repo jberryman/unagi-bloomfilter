@@ -12,12 +12,25 @@ module Control.Concurrent.BloomFilter.Internal (
     , membershipWordAndBits64, membershipWordAndBits128
     , maskLog2wRightmostBits
     , log2w
-    , unsafeSetBit
+    , uncheckedSetBit
     , isHash64Enough
     , assertionCanary
 # endif
     )
     where
+
+
+import Data.Bits hiding (unsafeShiftL, unsafeShiftR)
+import qualified Data.Bits as BitsHidden
+import qualified Data.Primitive.ByteArray as P
+import Data.Primitive.MachDeps
+import Control.Monad.Primitive(RealWorld)
+import Data.Atomics
+import Data.Hashabler
+import Control.Exception
+import Control.Monad
+import Data.Word(Word64)
+import Prelude hiding (lookup)
 
 -- Operations:
 --   - serialize/deserialize
@@ -85,17 +98,6 @@ module Control.Concurrent.BloomFilter.Internal (
 --    - static SipKey IS a problem
 --      - ?
 --
-
-import Data.Bits
-import qualified Data.Primitive.ByteArray as P
-import Data.Primitive.MachDeps
-import Data.Atomics
-import Data.Hashabler
-import Control.Monad.Primitive(RealWorld)
-import Control.Exception
-import Control.Monad
-import Data.Word(Word64)
-import Prelude hiding (lookup)
 
 -- TODO
 --   Maybe we should assume bloom parameters will be static
@@ -203,7 +205,7 @@ new key k log2l = do
     unless (k > 0) $ error "in 'new', k must be > 0"
     -- TODO make sure parameters fit into 64 or 128 bits; maybe need a different func for 'fast' version fitting in 64-bits
 
-    let sizeBytes = sIZEOF_INT `unsafeShiftL` log2l
+    let sizeBytes = sIZEOF_INT `uncheckedShiftL` log2l
         hash64Enough = isHash64Enough log2l k
     arr <- P.newAlignedPinnedByteArray sizeBytes aLIGNMENT_INT
     P.fillByteArray arr 0 sizeBytes (0x00)
@@ -215,7 +217,7 @@ membershipWordAndBits64 :: Hash64 a -> BloomFilter a -> (Int, Int)
 membershipWordAndBits64 !(Hash64 h) = \ !(BloomFilter{ .. }) ->
   assert (isHash64Enough log2l k) $
     -- Use leftmost bits for membership word, and take member bits from right
-    let !memberWord = fromIntegral (h `unsafeShiftR` (64-log2l))
+    let !memberWord = fromIntegral (h `uncheckedShiftR` (64-log2l))
 
         !wordToOr = setKMemberBits 0x00 k h
 
@@ -229,7 +231,7 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
     -- Use leftmost bits for membership word, and take member bits from right,
     -- then taking remaining member bits from h_1 (from the right)
     let !bitsLeftForMemberBits_h_0 = 64-log2l
-        !memberWord = fromIntegral (h_0 `unsafeShiftR` bitsLeftForMemberBits_h_0)
+        !memberWord = fromIntegral (h_0 `uncheckedShiftR` bitsLeftForMemberBits_h_0)
         (!kFor_h_0, !remainingBits_h_0) = bitsLeftForMemberBits_h_0 `quotRem` log2w
         !bitsForLastMemberBit_h_1 = log2w - remainingBits_h_0
         -- Leaving one which we'll always build with (possibly 0)
@@ -244,14 +246,14 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
         -- Build the final member bit with possible leftover bits from h_0
         !lastMemberBitPart0 =
             -- clear left of range:
-            ((h_0 `unsafeShiftL` log2l)
+            ((h_0 `uncheckedShiftL` log2l)
                 -- clear right of range:
                   `shiftR` (64 - remainingBits_h_0)) -- n.b. possible 64 shift
                 -- align for combining with lastMemberBitPart1:
-                  `unsafeShiftL` bitsForLastMemberBit_h_1
+                  `uncheckedShiftL` bitsForLastMemberBit_h_1
         -- ...and leftmost bits from h_1:
-        !lastMemberBitPart1 = h_1 `unsafeShiftR` (64-bitsForLastMemberBit_h_1)
-        !wordToOr = (wordToOrPart0.|.wordToOrPart1) `unsafeSetBit`
+        !lastMemberBitPart1 = h_1 `uncheckedShiftR` (64-bitsForLastMemberBit_h_1)
+        !wordToOr = (wordToOrPart0.|.wordToOrPart1) `uncheckedSetBit`
                        fromIntegral (lastMemberBitPart0.|.lastMemberBitPart1)
 
      in assert (kFor_h_1 >= 0 && -- we may only need a few to make up remainder.
@@ -268,15 +270,15 @@ setKMemberBits :: Int -> Int -> Word64 -> Int
 setKMemberBits !wd 3 !h' =
     -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
   let !b0 = fromIntegral h' .&. maskLog2wRightmostBits
-      !b1 = fromIntegral (h' `unsafeShiftR` log2w) .&. maskLog2wRightmostBits
-      !b2 = fromIntegral (h' `unsafeShiftR` (log2w*2)) .&. maskLog2wRightmostBits
-   in wd `unsafeSetBit` b0 `unsafeSetBit` b1 `unsafeSetBit` b2
+      !b1 = fromIntegral (h' `uncheckedShiftR` log2w) .&. maskLog2wRightmostBits
+      !b2 = fromIntegral (h' `uncheckedShiftR` (log2w*2)) .&. maskLog2wRightmostBits
+   in wd `uncheckedSetBit` b0 `uncheckedSetBit` b1 `uncheckedSetBit` b2
 -}
 setKMemberBits !wd 0 _ = wd
 setKMemberBits !wd !k' !h' =
     -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
   let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits
-   in setKMemberBits (wd `unsafeSetBit` memberBit) (k'-1) (h' `unsafeShiftR` log2w)
+   in setKMemberBits (wd `uncheckedSetBit` memberBit) (k'-1) (h' `uncheckedShiftR` log2w)
 
 
 
@@ -312,12 +314,24 @@ log2w :: Int -- logBase 2 wordSizeInBits
 log2w | sIZEOF_INT == 8 = 6
       | otherwise       = 5
 
-unsafeSetBit :: Int -> Int -> Int
-{-# INLINE unsafeSetBit #-}
-unsafeSetBit x i =
-  assert (i >= 0 && i < (sIZEOF_INT*8)) $
-    x .|. (1 `unsafeShiftL` i)
+uncheckedSetBit :: Int -> Int -> Int
+{-# INLINE uncheckedSetBit #-}
+uncheckedSetBit x i = x .|. (1 `uncheckedShiftL` i)
 
+uncheckedShiftR :: (Num a, FiniteBits a, Ord a) => a -> Int -> a
+{-# INLINE uncheckedShiftR #-}
+uncheckedShiftR a = \x->
+  assert (a >= 0) $
+  assert (x < finiteBitSize a) $
+  assert (x >= 0) $
+    a `BitsHidden.unsafeShiftR` x
+uncheckedShiftL :: (Num a, FiniteBits a, Ord a) => a -> Int -> a
+{-# INLINE uncheckedShiftL #-}
+uncheckedShiftL a = \x->
+  assert (a >= 0) $
+  assert (x < finiteBitSize a) $
+  assert (x >= 0) $
+    a `BitsHidden.unsafeShiftL` x
 
 -- TODO test 1000 random fetch (assert false), insert and fetch (assert true) on sufficiently large tree.
 -- TODO test creation and unit inset lookup on very small trees (log2l = [0,1,2]).
@@ -488,10 +502,6 @@ fpr nI lI kI wI =
 --  - can we make it durable/persistent and consistent via some easy mechanism?
 --      (how do atomic operations and mmap relate?)
 
-
--- TODO replace above with a version with assertions.
--- uncheckedShiftR ::
--- uncheckedShiftL ::
 
 -- Not particularly fast; if needs moar fast see
 --   http://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
