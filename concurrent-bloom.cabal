@@ -37,7 +37,7 @@ library
   if flag(instrumented)
       ghc-options:      -fno-ignore-asserts
       -- TODO stacktraces don't seem to show anything useful. Maybe because of INLINEs?:
-      ghc-prof-options: -fprof-auto -auto-all -caf-all "-with-rtsopts=-xc"
+      ghc-prof-options:  "-with-rtsopts=-xc" -fprof-auto -fprof-auto-calls
 
   exposed-modules:     Control.Concurrent.BloomFilter
                      , Control.Concurrent.BloomFilter.Internal
@@ -60,7 +60,7 @@ test-suite tests
 
   ghc-options:         -Wall -O2 -threaded -funbox-strict-fields -fno-ignore-asserts
   if flag(instrumented)
-      ghc-prof-options: -fprof-auto -auto-all -caf-all "-with-rtsopts=-xc"
+      ghc-prof-options:  "-with-rtsopts=-xc" -fprof-auto -fprof-auto-calls
 
   if flag(instrumented)
       CPP-Options:     -DASSERTIONS_ON
