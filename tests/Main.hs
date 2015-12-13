@@ -138,7 +138,7 @@ main = do
       newNeedsExactly64Plus1 <- Bloom.new (SipKey 1 1) kFilling64Plus1 (length membershipWord)
       assert (not $ hash64Enough newNeedsExactly64Plus1) $ return ()
       do
-        let hPlus1 = 
+        let hPlus1 =
                (\(lastKForH1 , ksForH0)->
                  let h_0 = fromBits64 (membershipWord++ksForH0)
                      h_1 = fromBits64 (lastKForH1++(replicate (64-log2w) '1')) -- Ones to the right ought to be ignored
@@ -152,9 +152,30 @@ main = do
             error $ "membershipWordAndBits64-full memberWord: expected "++(show memberWordExpected)++" but got "++(show memberWordOut)
         unless (wordToOr == wordToOrExpected') $
             error $ "membershipWordAndBits64-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
-      -- need all 128 bits --------
-      --    log2l = 8 , k32 = 24, k64 = 20
 
+      -- need all 128 bits --------
+      do let kFillingAll128 | wordSizeInBits == 64 = 20
+                            | otherwise            = 24
+             rmdr_h_0 = (64 - (length membershipWord'')) `mod` log2w
+             memberWordExpected = 170
+             membershipWord'' = printf "%08b" memberWordExpected
+             -- h128 = (\(x,y)-> Hash128 (fromBits64 x) (fromBits64 y)) $ splitAt 64 $
+             --          (membershipWord''++concatMap memberWordPaddedBinStr [1..kFillingAll128])
+             h128 =
+               let (w_0, w_rest) = splitAt rmdr_h_0 (memberWordPaddedBinStr 1)
+                in (\(x,y)-> Hash128 (fromBits64 x) (fromBits64 (w_rest++y))) $ splitAt 64 $
+                      (membershipWord'' ++w_0++
+                         (concatMap memberWordPaddedBinStr [2..kFillingAll128]))
+         newNeedsAll128 <- Bloom.new (SipKey 1 1) kFillingAll128 (length membershipWord'')
+         assert (not $ hash64Enough newNeedsAll128) $ return ()
+         let wordToOrExpected' = foldl' setBit 0 [1..kFillingAll128]
+
+         let (memberWordOut, wordToOr) =
+               membershipWordAndBits128 h128 newNeedsAll128
+         unless (memberWordOut == memberWordExpected) $
+            error $ "membershipWordAndBits128-full memberWord: expected "++(show memberWordExpected)++" but got "++(show memberWordOut)
+         unless (wordToOr == wordToOrExpected') $
+            error $ "membershipWordAndBits128-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
 
     putStrLn "TESTS PASSED"
 
