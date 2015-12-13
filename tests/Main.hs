@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE CPP, BangPatterns #-}
 module Main where
 
 import Control.Concurrent.BloomFilter.Internal
@@ -13,6 +13,9 @@ import Data.Word(Word64)
 import Control.Exception
 import Text.Printf
 import Data.List
+import System.Random
+import Control.Applicative
+import Prelude
 
 wordSizeInBits :: Int
 wordSizeInBits = sIZEOF_INT * 8
@@ -177,7 +180,44 @@ main = do
          unless (wordToOr == wordToOrExpected') $
             error $ "membershipWordAndBits128-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
 
+
+    -- Creation/Insertion unit tests:
+    createInsertFprTests
+
     putStrLn "TESTS PASSED"
+
+createInsertFprTests :: IO ()
+createInsertFprTests =
+  let bloomParams = [
+        (2, 1, 2),
+        (4, 1, 3),
+        (500, 8, 3),
+        (1000,  8, 10),
+        (500, 8, 15),
+        (500,  8, 20),
+        (5000000,  22, 3)]
+   in forM_ bloomParams $ \param@(payloadSz, ourLog2l, ourK)-> do
+        let !r = fpr payloadSz (2^ourLog2l) ourK
+            payload = take payloadSz [2,4..] :: [Int]
+            antiPayload = take 1000 [1,3..]
+        randKey <- (,) <$> randomIO <*> randomIO
+        bl <- Bloom.new (uncurry SipKey randKey) ourK ourLog2l
+
+        allNeg <- mapM (Bloom.lookup bl) payload
+        unless (all not allNeg) $
+          error $ "Expected empty: "++(show param)++"\n"++(show randKey)++(show allNeg)
+
+        falsesAndFPs <- mapM (Bloom.insert bl) payload
+        -- This should on average be less than `r` calculated on fully-loaded
+        -- bloom filter:
+        let insertionFprMeasured =
+              (fromIntegral $ length $ filter not falsesAndFPs) / fromIntegral payloadSz
+        allTruePositives <- mapM (Bloom.lookup bl) payload
+        unless (and allTruePositives) $
+          error $ "Expected all true positives"++(show param)++"\n"++(show randKey)
+
+
+
 
 # ifdef ASSERTIONS_ON
 checkAssertionsOn :: IO ()

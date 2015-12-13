@@ -203,7 +203,6 @@ new key k log2l = do
     -- In typed interface all of these conditions hold:
     unless (log2l >= 0) $ error "in 'new', log2l must be >= 0"
     unless (k > 0) $ error "in 'new', k must be > 0"
-    -- TODO make sure parameters fit into 64 or 128 bits; maybe need a different func for 'fast' version fitting in 64-bits
 
     let sizeBytes = sIZEOF_INT `uncheckedShiftL` log2l
         hash64Enough = isHash64Enough log2l k
@@ -364,8 +363,8 @@ lookup :: Hashable a=> BloomFilter a -> a -> IO Bool
 {-# INLINE lookup #-}
 lookup bloom@(BloomFilter{..}) = \a-> do
     let (!memberWord, !wordToOr) = membershipWordAndBitsFor bloom a
-    oldWord <- P.readByteArray arr memberWord
-    return $! (oldWord .|. wordToOr) /= oldWord
+    existingWord <- P.readByteArray arr memberWord
+    return $! (existingWord .|. wordToOr) == existingWord
 
 
 {-

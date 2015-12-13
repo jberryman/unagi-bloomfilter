@@ -68,6 +68,7 @@ test-suite tests
       buildable: True
       build-depends:       base
                          , QuickCheck
+                         , random
                          , concurrent-bloomfilter
                          , primitive
                          , hashabler
