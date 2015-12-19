@@ -211,13 +211,14 @@ new key k log2l = do
 
     return $ BloomFilter { l_minus1 = (2^log2l)-1, .. }
 
+
 membershipWordAndBits64 :: Hash64 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits64 #-}
 membershipWordAndBits64 !(Hash64 h) = \ !(BloomFilter{ .. }) ->
   assert (isHash64Enough log2l k) $
-    -- Use leftmost bits for membership word, and take member bits from right
-    let !memberWord = fromIntegral (h `uncheckedShiftR` (64-log2l))
-
+    -- Use leftmost bits for membership word, and take member bits from right.
+    -- N.b. shiftR for possible 1-word filter when log2l = 0:
+    let !memberWord = fromIntegral (h `shiftR` (64-log2l))
         !wordToOr = setKMemberBits 0x00 k h
 
      in (memberWord, wordToOr)
@@ -229,9 +230,11 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
     -- Use leftmost bits for membership word, and take member bits from right,
     -- then taking remaining member bits from h_1 (from the right)
     let !bitsLeftForMemberBits_h_0 = 64-log2l
-        !memberWord = fromIntegral (h_0 `uncheckedShiftR` bitsLeftForMemberBits_h_0)
+        -- N.b. shiftR for possible 1-word filter when log2l = 0:
+        !memberWord = fromIntegral (h_0 `shiftR` bitsLeftForMemberBits_h_0)
         (!kFor_h_0, !remainingBits_h_0) = bitsLeftForMemberBits_h_0 `quotRem` log2w
-        !bitsForLastMemberBit_h_1 = log2w - remainingBits_h_0
+        !bitsForLastMemberBit_h_1 = assert (remainingBits_h_0 < log2w) $ -- for uncheckedShiftR
+            log2w - remainingBits_h_0
         -- Leaving one which we'll always build with (possibly 0)
         -- remainingBits_h_0 and the leftmost bits from h_1:
         !kFor_h_1 = (k - kFor_h_0) - 1
@@ -331,8 +334,6 @@ uncheckedShiftL a = \x->
   assert (x >= 0) $
     a `BitsHidden.unsafeShiftL` x
 
--- TODO test 1000 random fetch (assert false), insert and fetch (assert true) on sufficiently large tree.
--- TODO test creation and unit inset lookup on very small trees (log2l = [0,1,2]).
 
 -- | Atomically insert a new element into the bloom filter.
 --

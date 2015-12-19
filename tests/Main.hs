@@ -1,5 +1,5 @@
 {-# LANGUAGE CPP, BangPatterns #-}
-module Main where
+module Main (main) where
 
 import Control.Concurrent.BloomFilter.Internal
 import qualified Control.Concurrent.BloomFilter as Bloom
@@ -65,7 +65,47 @@ main = do
        unless (not $ hash64Enough newNeeds128) $
            error "These parameters should have produced a bloom requiring just a bit more than 64-bits!"
 
+    -- for membershipWordAndBits128  and membershipWordAndBits64:
+    membershipWordTests
 
+    -- Creation/Insertion/FPR unit tests:
+    createInsertFprTests
+    smallBloomTest
+    insertSaturateTest
+    highFprTest
+
+    putStrLn "TESTS PASSED"
+
+-- Try to get all bits of a small filter filled and force many configurations:
+insertSaturateTest :: IO ()
+insertSaturateTest = do
+    randKey <- (,) <$> randomIO <*> randomIO
+    bl <- Bloom.new (uncurry SipKey randKey) 2 2
+    forM_ [(1::Int)..500] $ \el-> do
+      void $ Bloom.insert bl el
+      truePos <- Bloom.lookup bl el
+      unless truePos $
+        error $ "insertSaturateTest: Somehow got a false neg after insertion: "++(show (el, randKey))
+    -- TODO check array for saturation.
+
+-- Smoke test for very small bloom filters:
+smallBloomTest :: IO ()
+smallBloomTest =
+  forM_ [0..2] $ \ourLog2l-> do
+    randKey <- (,) <$> randomIO <*> randomIO
+    bl <- Bloom.new (uncurry SipKey randKey) 3 ourLog2l
+    forM_ [1,2::Int] $ \el-> do
+      likelyNotPresent <- Bloom.insert bl el
+      truePos <- Bloom.lookup bl el
+      unless truePos $
+        error $ "smallBloomTest: Somehow got a false neg after insertion: "++(show (ourLog2l, el, randKey))
+      unless likelyNotPresent $
+        error $ "smallBloomTest: got unlikely failure, please report: "++(show (ourLog2l, el, randKey))
+
+
+membershipWordTests :: IO ()
+membershipWordTests = do
+    let sz33MB = 22
     -- membershipWordAndBits64 --------
     do let membershipWord = "1101001001001001001011"
        let h | wordSizeInBits == 64 = Hash64 $ fromBits64 $ membershipWord++"         001111 001110 001101 001100 001011 001010 001001"
@@ -181,12 +221,6 @@ main = do
             error $ "membershipWordAndBits128-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
 
 
-    -- Creation/Insertion/FPR unit tests:
-    createInsertFprTests
-    highFprTest
-
-    putStrLn "TESTS PASSED"
-
 createInsertFprTests :: IO ()
 createInsertFprTests =
   let bloomParams = [
@@ -268,7 +302,6 @@ highFprTest = do
         let !loadedFprMeasured =
               (fromIntegral $ length $ filter id falsePs) / (fromIntegral antiPayloadSz)
 
-        print $ map fmtPct [loadedFprMeasured, loadedFpr]
         -- TODO proper statistical measure of accuracy of measured FPR
         unless ((abs $ loadedFprMeasured - loadedFpr) < 0.03) $
           error $ "Measured high FPR deviated from calculated FPR more than we expected: "
