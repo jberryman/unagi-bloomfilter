@@ -181,14 +181,16 @@ main = do
             error $ "membershipWordAndBits128-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
 
 
-    -- Creation/Insertion unit tests:
+    -- Creation/Insertion/FPR unit tests:
     createInsertFprTests
+    highFprTest
 
     putStrLn "TESTS PASSED"
 
 createInsertFprTests :: IO ()
 createInsertFprTests =
   let bloomParams = [
+        -- all params with low FPR:
         (2, 1, 2),
         (4, 1, 3),
         (500, 8, 3),
@@ -197,9 +199,10 @@ createInsertFprTests =
         (500,  8, 20),
         (5000000,  22, 3)]
    in forM_ bloomParams $ \param@(payloadSz, ourLog2l, ourK)-> do
-        let !r = fpr payloadSz (2^ourLog2l) ourK
+        let !loadedFpr = fpr payloadSz (2^ourLog2l) ourK wordSizeInBits
             payload = take payloadSz [2,4..] :: [Int]
-            antiPayload = take 1000 [1,3..]
+            antiPayloadSz = 10000
+            antiPayload = take antiPayloadSz [1,3..]
         randKey <- (,) <$> randomIO <*> randomIO
         bl <- Bloom.new (uncurry SipKey randKey) ourK ourLog2l
 
@@ -208,15 +211,73 @@ createInsertFprTests =
           error $ "Expected empty: "++(show param)++"\n"++(show randKey)++(show allNeg)
 
         falsesAndFPs <- mapM (Bloom.insert bl) payload
-        -- This should on average be less than `r` calculated on fully-loaded
+        -- This should on average be less than `loadedFpr` calculated on fully-loaded
         -- bloom filter:
         let insertionFprMeasured =
-              (fromIntegral $ length $ filter not falsesAndFPs) / fromIntegral payloadSz
+              (fromIntegral $ length $ filter not falsesAndFPs) / (fromIntegral payloadSz)
         allTruePositives <- mapM (Bloom.lookup bl) payload
         unless (and allTruePositives) $
           error $ "Expected all true positives"++(show param)++"\n"++(show randKey)
 
+        falsePs <- mapM (Bloom.lookup bl) antiPayload
+        let !loadedFprMeasured =
+              (fromIntegral $ length $ filter id falsePs) / (fromIntegral antiPayloadSz)
 
+        -- TODO proper statistical measure of accuracy of measured FPR
+        unless (all (< 0.01) [insertionFprMeasured, loadedFprMeasured]) $
+          error $ "Measured unexpectedly high FPR. Possible fluke; please retry tests: "
+                   ++(show param)++"\n"++(show randKey)
+        unless ((abs $ loadedFprMeasured - loadedFpr) < 0.005) $
+          error $ "Measured FPR deviated from calculated FPR more than we expected: "
+                   ++(show param)++"\n"++(show randKey)
+
+        allTruePositivesIns <- mapM (Bloom.insert bl) payload
+        unless (all not allTruePositivesIns) $
+          error $ "Expected all true positives (i.e. insert failures): "
+                 ++(show param)++"\n"++(show randKey)
+
+
+-- spot check our `fpr` function at higher values:
+highFprTest :: IO ()
+highFprTest = do
+  let bloomParams = [
+        -- params with double-digit pct FPR
+          (50000, 10, 3)
+        , (65000, 10, 3) -- 84.8% calculated . I guess error only affects smaller filters significantly?
+        , (5000, 8, 3)
+        , (5000, 8, 10)
+        , (500, 6, 1)
+        , (1000, 5, 2)
+
+        -- fpr seems to get inaccurate above ~ 80%: TODO
+        -- , (625, 3, 2)
+        -- , (2500, 5, 2)  -- 84.42%  measured  vs.  96.29% calculated
+        -- , (2450, 5, 2)  -- 83.35%  measured  vs.  89.37% calculated
+        -- , (2400, 5, 2)  -- 81.71%  measured  vs.  84.83% calculated
+        ]
+   in forM_ bloomParams $ \param@(payloadSz, ourLog2l, ourK)-> do
+        let !loadedFpr = fpr payloadSz (2^ourLog2l) ourK wordSizeInBits
+            payload = take payloadSz [2,4..] :: [Int]
+            antiPayloadSz = 100000
+            antiPayload = take antiPayloadSz [1,3..]
+        randKey <- (,) <$> randomIO <*> randomIO
+        bl <- Bloom.new (uncurry SipKey randKey) ourK ourLog2l
+        mapM_ (Bloom.insert bl) payload
+
+        falsePs <- mapM (Bloom.lookup bl) antiPayload
+        let !loadedFprMeasured =
+              (fromIntegral $ length $ filter id falsePs) / (fromIntegral antiPayloadSz)
+
+        print $ map fmtPct [loadedFprMeasured, loadedFpr]
+        -- TODO proper statistical measure of accuracy of measured FPR
+        unless ((abs $ loadedFprMeasured - loadedFpr) < 0.03) $
+          error $ "Measured high FPR deviated from calculated FPR more than we expected: "
+                   ++(fmtPct loadedFprMeasured)++" "++(fmtPct loadedFpr)
+                   ++(show param)++"\n"++(show randKey)
+
+
+fmtPct :: Double -> String
+fmtPct x = printf "%.2f%%" (x*100)
 
 
 # ifdef ASSERTIONS_ON

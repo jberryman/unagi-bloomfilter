@@ -222,7 +222,6 @@ membershipWordAndBits64 !(Hash64 h) = \ !(BloomFilter{ .. }) ->
 
      in (memberWord, wordToOr)
 
--- TODO unit test with a few made-up hashes and different k
 membershipWordAndBits128 :: Hash128 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits128 #-}
 membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
@@ -436,6 +435,10 @@ fpr nI lI kI =
 -- with the provided parameters and having @n@ elements, the value returned
 -- here is the precentage, over the course of many queries for elements /not/ in
 -- the filter, of those queries which will return an incorrect @True@ result.
+--
+-- Note this is an approximation of a flawed equation (and may also have been
+-- implemented incorrectly). It seems to be reasonably accurate though, except
+-- when the calculated fpr exceeds 70% or so. See the test suite.
 --
 -- This function is slow but the complexity is bounded and can accept inputs of
 -- any size.
