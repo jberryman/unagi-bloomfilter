@@ -39,16 +39,25 @@ import Prelude hiding (lookup)
 --   - insert (with Bool return i.e. does lookup)
 --   - lookup (or "member" or "elem")
 --   - lossless union of two bloom filters (Monoid?)
+--     - probably just implement for pure/frozen filters for now (doing an atomic op on every word of a filter is probably bad new bears).
 --     - note also we can union any two bloom filters (as long as they're power of two size);
 --       we simply fold the larger in on itself until it matches the smaller
 --       SO DO WE CARE ABOUT HAVING THE LENGTH AT THE TYPE LEVEL?
---       (MAYBE: we still want that for `new` to ensure sufficient hash bits)
+--       (MAYBE: we still want that for `new` to ensure sufficient hash bits
+--               But we only need a typelevel nat arg right? Not a tag.
+--               The downside is just that we can't have a type-checked union,
+--               which is probably not a big deal.
+--               BUT: is this a proper Monoid when it's "lossy"?
+--       (After thought): this perhaps can only easily be a semi-group, since we can't insert into empty
+--                        so implement an operation `union` which we can make Semigroup.<> when it lands in base. (then deprecate `union` where we can offer a Semigroup instance)
+--
 --   - lossy intersection of two bloom filters (FPR becomes at most the FPR of one of constituents, but may be more than if single were created from scratch)
+--     - again this doesn't require type-level length tag; we can union fold one filter down to match the other.
 --   - freeze/thaw
 --     - maybe freeze should return exposed constructor type (exposing immutable array)
 --   - approximating number of items, and size of union and intersection
---   - bulk reads and writes, for performance:
---     - re-order hashes for in-order cache line access
+--   - bulk reads and writes, for performance: (especially good for pure interface fromList, etc.
+--     - re-order hashes for in-order cache line access (benchmark this)
 --     - consider prefetching
 --     - combine inter-word reads and writes.
 --
@@ -266,15 +275,6 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
 
 setKMemberBits :: Int -> Int -> Word64 -> Int
 {-# INLINE setKMemberBits #-}
-{- UNROLLED for 3
--- TODO benchmark this in context of a lookup
-setKMemberBits !wd 3 !h' =
-    -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
-  let !b0 = fromIntegral h' .&. maskLog2wRightmostBits
-      !b1 = fromIntegral (h' `uncheckedShiftR` log2w) .&. maskLog2wRightmostBits
-      !b2 = fromIntegral (h' `uncheckedShiftR` (log2w*2)) .&. maskLog2wRightmostBits
-   in wd `uncheckedSetBit` b0 `uncheckedSetBit` b1 `uncheckedSetBit` b2
--}
 setKMemberBits !wd 0 _ = wd
 setKMemberBits !wd !k' !h' =
     -- possible cast to 32-bit Int but we only need rightmost 5 or 6:

@@ -5,6 +5,7 @@ module Main where
 #  endif
 
 import Criterion.Main
+import Control.Monad
 
 import Control.Concurrent.BloomFilter.Internal
 import qualified Control.Concurrent.BloomFilter as Bloom
@@ -17,6 +18,10 @@ import Data.Hashabler
 
 main :: IO ()
 main = do
+    assertionsOn <- assertionCanary
+    when assertionsOn $
+      putStrLn  $ "!!! WARNING !!! assertions are enabled in library code and may result in "
+                ++"slower than realistic benchmarks. Try configuring without -finstrumented"
     b_5_20 <- Bloom.new (SipKey 1 1) 5 20
     b_13_20 <- Bloom.new (SipKey 1 1) 13 20 -- needs 128
     defaultMain [
