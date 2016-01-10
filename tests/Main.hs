@@ -241,6 +241,21 @@ membershipWordTests = do
          unless (wordToOr == wordToOrExpected') $
             error $ "membershipWordAndBits128-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
 
+{-
+ A NOTE ON TESTING FPR (from the paper)
+
+"consideration when implementing Bloom-1 filters. To
+ensure that the results obtained using Eq. (5) are accurate,
+a Bloom-1 filter was implemented in Matlab using ideal
+hash functions and simulated for the same parameters. In
+each simulation, 10,000 Fast Bloom filters are generated
+by inserting random elements until the specified load is
+achieved. Then their false positive rate is evaluated doing
+10^6 random queries of non member elements. The average
+results were checked against those obtained with Eq. (5).
+This was done for false positive rates larger than 10-6
+. In all cases, differences were smaller than 0.5%."
+-}
 
 createInsertFprTests :: IO ()
 createInsertFprTests =

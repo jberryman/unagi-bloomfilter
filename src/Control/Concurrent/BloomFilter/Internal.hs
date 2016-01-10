@@ -117,48 +117,31 @@ import Prelude hiding (lookup)
 --   - that way we can serialize/deserialize and combine (and have Monoid instance)
 --   - we can also MAYBE make sure at compile time that 128 bits will be enough for the chosen parameters
 --     -we could even provide a constraint `Faster w k l` that makes sure it's under 64 bits.
-
-
-{-
-A Bloom-1 filter is an array B1 of l words, each of which
-is w bits long. The total number m of bits is l x w. To encode
-a member e during the filter setup, we first obtain a number
-of hash bits from e, and use log2 l hash bits to map e to a
-word in B1. It is called the membership word of e in the
-Bloom-1 filter. We then use k log2 w hash bits to further map
-e to k membership bits in the word and set them to ones.
-The total number of hash bits that are needed is
-log2 l þ k log2 w. Suppose m = 2^20, k = 3, w = 2^6, and
-l = 2^14. Only 32 hash bits are needed, smaller than the
-60 hash bits required in the previous Bloom filter example
-under similar parameters.
-To check if an element e0 is a member in the set that is
-encoded in a Bloom-1 filter, we first perform hash
-operations on e0 to obtain log2 l þ k log2 w hash bits. We
-use log2 l bits to locate its membership word in B1, and then
-use k log2 w bits to identify the membership bits in the word.
-If all membership bits are ones, it is considered to be a
-member. Otherwise, it is not.
--}
-
-{-
-Hash bits "enough for anyone" value?
-
-32 GB bloom filter = m = 256,000,000,000
-                     l =   4,000,000,000
-                     w =              64
-
-BitsReqd = log2 l + k log2 w
-
-So with k = 3:
-    50 hash bits
-
-And assuming we only have 128 hash bits, we can have max:
-    64 GB bloom, k = 15-16 max
-
-...which gives us an FPR for different loads of:
-
+{- TYPED 'new':
+ -   - parameterize by: k, a, key
+ - OR:
+ -   - limit typed interface to only k = 3?
+ -   - keep 'key' in type? Awkward!
+ -     - maybe we can enforce only a single "implicit" 'key' value for entire
+ -        program using those singleton instance thingies? Then keep this out
+ -        of the type.
+ -   - constrain log2l <=64, and log2l+ k*log2w <=128 (or 64 for "fast" variant)
  -}
+-- (OLDER NOTES):
+--  - make whole thing serializable (so need consistent hashing)
+--    - NOTE!: we need to make sure that hashing is cross-platform
+--      AAANND that we use the *same* hashing library. Easiest way
+--      might be to fix the version of hashing lib, AND store a version number
+--      in serialized form.
+--  - function for OR combining bloom filters (perhaps basis for distributed setup)
+--  - offer a function (or table) for calculating optimal k
+--      - offer guidance on how to use it
+--  - benchmarks and performance tuning
+--  - can we make it durable/persistent and consistent via some easy mechanism?
+--      (how do atomic operations and mmap relate?)
+
+
+
 
 -- | A mutable bloom filter representing a set of 'Hashable' values of type @a@.
 --
@@ -179,16 +162,6 @@ data BloomFilter a = BloomFilter { key :: !SipKey
                                  }
 
 
-{- TYPED 'new':
- -   - parameterize by: k, a, key
- - OR:
- -   - limit typed interface to only k = 3?
- -   - keep 'key' in type? Awkward!
- -     - maybe we can enforce only a single "implicit" 'key' value for entire
- -        program using those singleton instance thingies? Then keep this out
- -        of the type.
- -   - constrain log2l <=64, and log2l+ k*log2w <=128 (or 64 for "fast" variant)
- -}
 
 -- | Exceptions raised because of invalid parameters passed to 'new' or other
 -- invalid internal states from making about with BloomFilter internals. These
@@ -389,34 +362,8 @@ lookup bloom@(BloomFilter{..}) = \a-> do
     return $! (existingWord .|. wordToOr) == existingWord
 
 
-{-
- A NOTE ON TESTING FPR:
 
-consideration when implementing Bloom-1 filters. To
-ensure that the results obtained using Eq. (5) are accurate,
-a Bloom-1 filter was implemented in Matlab using ideal
-hash functions and simulated for the same parameters. In
-each simulation, 10,000 Fast Bloom filters are generated
-by inserting random elements until the specified load is
-achieved. Then their false positive rate is evaluated doing
-106 random queries of non member elements. The average
-results were checked against those obtained with Eq. (5).
-This was done for false positive rates larger than 10-6
-. In all cases, differences were smaller than 0.5%.
--}
 
--- find membership word
--- locate k bits within word
--- optimal k = 
---
---   where m = number bits in bit array
---         n = number members in set
---
---
-
--- FOR TESTING: if a large number of search operations for random elements not
--- stored in the Bloom filter are done, the average of the results should match
--- the value provided by the following
 
 
 {-
@@ -457,7 +404,8 @@ fpr nI lI kI =
 -- | An estimate of the false-positive rate for a bloom-1 filter. For a filter
 -- with the provided parameters and having @n@ elements, the value returned
 -- here is the precentage, over the course of many queries for elements /not/ in
--- the filter, of those queries which will return an incorrect @True@ result.
+-- the filter, of those queries which would be expected to return an incorrect
+-- @True@ result.
 --
 -- Note this is an approximation of a flawed equation (and may also have been
 -- implemented incorrectly). It seems to be reasonably accurate though, except
@@ -499,33 +447,6 @@ fpr nI lI kI wI =
 
     summation low hi = sum . \f-> map f [low..hi]
 
-
-
-
-
-
-
---
--- Questions:
---  - must we really do 'k' hashes, or is there a faster way to do that?
---  - what about when those hashes collide? Do we actually have to get 'k' bits set?
---
--- Next release:
---  - better/smarter/faster hashing
---    - might just pin to 128-bit hash ("should be enough for anyone")
---  - offer newtype phantom wrapper around a heterogeneous collection?
---    - but ONLY if we have some guarantee that hashing different types don't clash
---  - make whole thing serializable (so need consistent hashing)
---    - NOTE!: we need to make sure that hashing is cross-platform
---      AAANND that we use the *same* hashing library. Easiest way
---      might be to fix the version of hashing lib, AND store a version number
---      in serialized form.
---  - function for OR combining bloom filters (perhaps basis for distributed setup)
---  - offer a function (or table) for calculating optimal k
---      - offer guidance on how to use it
---  - benchmarks and performance tuning
---  - can we make it durable/persistent and consistent via some easy mechanism?
---      (how do atomic operations and mmap relate?)
 
 
 -- Not particularly fast; if needs moar fast see

@@ -1,7 +1,17 @@
 name:                unagi-bloomfilter
 version:             0.1.0.0
-synopsis:            A cache-efficient, concurrent bloom filter
-description:         TODO: dynamic, based on bloom-1 from "Fast Bloom Filters and Their Generalization" by Qiao, et al.
+synopsis:            A fast, cache-efficient, concurrent bloom filter
+description:
+  This library implements a fast concurrent bloom filter, based on bloom-1 from
+  "Fast Bloom Filters and Their Generalization" by Y Qiao, et al. 
+  .
+  A bloom filter is a probabilistic, constant-space, set-like data structure
+  supporting insertion and membership queries. This implementation is backed by
+  SipHash so can safely consume untrusted inputs, and exposes both a more
+  type-safe API and a more flexible low-level API.
+  .
+  TODO benchmark comparison image
+
 homepage:            http://github.com/jberryman/unagi-bloomfilter
 license:             BSD3
 license-file:        LICENSE
