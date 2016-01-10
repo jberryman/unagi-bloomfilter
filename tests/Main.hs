@@ -7,6 +7,7 @@ import Data.Hashabler
 
 import Test.QuickCheck hiding ((.&.))
 import Data.Primitive.MachDeps
+import Data.Primitive.ByteArray
 import Data.Bits
 import Control.Monad
 import Data.Word(Word64)
@@ -86,7 +87,12 @@ insertSaturateTest = do
       truePos <- Bloom.lookup bl el
       unless truePos $
         error $ "insertSaturateTest: Somehow got a false neg after insertion: "++(show (el, randKey))
-    -- TODO check array for saturation.
+    forM_ [0..3] $ \ix-> do
+      wd <- readByteArray (arr bl) ix
+      let fill = popCount (wd :: Word)
+      when (fill < (wordSizeInBits - 5)) $
+        error "Bloomfilter doesn't look like it was saturated like we expected"
+
 
 -- Smoke test for very small bloom filters:
 smallBloomTest :: IO ()

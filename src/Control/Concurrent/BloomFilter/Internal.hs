@@ -160,11 +160,11 @@ And assuming we only have 128 hash bits, we can have max:
 -- | A mutable bloom filter representing a set of 'Hashable' values of type @a@.
 --
 -- A bloom filter is a set-like probabilistic hash-based data structure.
--- Elements can be 'insert'-ed and queried for membership. The bloom filter
+-- Elements can be 'insert'-ed and 'lookup'-ed again. The bloom filter
 -- takes a constant amount of memory regardless of the size and number of
 -- elements inserted, however as the bloom filter \"grows\" the likelihood of
 -- false-positives being returned by 'lookup' increases. 'fpr' can be used to
--- calculate the expected false-positive rate.
+-- estimate the expected false-positive rate.
 data BloomFilter a = BloomFilter { key :: !SipKey
                                  , k :: !Int
                                  , hash64Enough :: Bool
