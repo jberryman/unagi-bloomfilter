@@ -6,7 +6,6 @@ import qualified Control.Concurrent.BloomFilter as Bloom
 import Data.Hashabler
 
 import Test.QuickCheck hiding ((.&.))
-import Data.Primitive.MachDeps
 import Data.Primitive.ByteArray
 import Data.Bits
 import Control.Monad
@@ -17,9 +16,6 @@ import Data.List
 import System.Random
 import Control.Applicative
 import Prelude
-
-wordSizeInBits :: Int
-wordSizeInBits = sIZEOF_INT * 8
 
 main :: IO ()
 main = do
@@ -75,7 +71,26 @@ main = do
     insertSaturateTest
     highFprTest
 
+    expectedExceptionsTest
+
     putStrLn "TESTS PASSED"
+
+-- Test exceptions that should only be possible to raise in untyped interface:
+expectedExceptionsTest :: IO ()
+expectedExceptionsTest = do
+    let assertRaises io = catch (io >> error "Expected BloomFilterParamException to be raised.")
+           (\e -> (e :: BloomFilterParamException) `seq` return ())
+        nw :: Int -> Int -> IO (Bloom.BloomFilter Int)
+        nw = Bloom.new (SipKey 1 1)
+    -- `k` not > 0
+    assertRaises $ nw 0 0
+    -- `log2l` not >= 0
+    assertRaises $ nw 1 (-1)
+    -- `log2l` too damn big
+    assertRaises $ nw 1 65
+    -- requiring > 128 hash bits:
+    assertRaises $ nw ((120 `div` log2w) + 1) 8
+    assertRaises $ nw 3 ((128 - 3*log2w) + 1)
 
 -- Try to get all bits of a small filter filled and force many configurations:
 insertSaturateTest :: IO ()

@@ -2,6 +2,7 @@
 module Control.Concurrent.BloomFilter.Internal (
       new
     , BloomFilter(..)
+    , BloomFilterParamException(..)
     , insert
     , lookup
     , SipKey(..)
@@ -12,6 +13,7 @@ module Control.Concurrent.BloomFilter.Internal (
     , membershipWordAndBits64, membershipWordAndBits128
     , maskLog2wRightmostBits
     , log2w
+    , wordSizeInBits
     , uncheckedSetBit
     , isHash64Enough
     , assertionCanary
@@ -28,6 +30,7 @@ import Control.Monad.Primitive(RealWorld)
 import Data.Atomics
 import Data.Hashabler
 import Control.Exception
+import Data.Typeable(Typeable)
 import Control.Monad
 import Data.Word(Word64)
 import Prelude hiding (lookup)
@@ -177,7 +180,9 @@ data BloomFilter a = BloomFilter { key :: !SipKey
 
 
 {- TYPED 'new':
- -   - parameterize by: k, log2l, a
+ -   - parameterize by: k, a, key
+ - OR:
+ -   - limit typed interface to only k = 3?
  -   - keep 'key' in type? Awkward!
  -     - maybe we can enforce only a single "implicit" 'key' value for entire
  -        program using those singleton instance thingies? Then keep this out
@@ -185,21 +190,37 @@ data BloomFilter a = BloomFilter { key :: !SipKey
  -   - constrain log2l <=64, and log2l+ k*log2w <=128 (or 64 for "fast" variant)
  -}
 
--- TODO change these 'error' to throw a different exception too.
+-- | Exceptions raised because of invalid parameters passed to 'new' or other
+-- invalid internal states from making about with BloomFilter internals. These
+-- should never be raised when using our Typed interface.
+newtype BloomFilterParamException = BloomFilterParamException String
+    deriving (Show, Typeable)
+
+instance Exception BloomFilterParamException
+
 
 -- | Create a new bloom filter of elements of type @a@ with the given hash key
 -- and parameters. 'fpr' can be useful for calculating the @k@ parameter, or
 -- determining a good filter size.
 --
--- TODO note re. number of required hash bits, performance concerns re. 32-bit machines and when we need > 64 hash bits. Expose utility function for that calculation.
+-- The parameters must satisfy the following conditions, otherwise a
+-- 'BloomFilterParamException' will be thrown:
 --
--- For example on a 32-bit machine, the following produces a ~4KB bloom filter
--- of @2^10@ 32-bit words, using 3 bits per element:
+--   - @k > 0@
+--   - @log2l >= 0 && log2l <= wordSizeInBits@
+--   - @log2l + k*(logBase 2 wordSizeInBits) <= 128@
+--
+-- In addition, performance on 64-bit machines will be best when
+-- @log2l + k*(logBase 2 wordSizeInBits) <= 128@ where we require only 64 hash
+-- bits for each element. (Performance on 32-bit machines will be worse in all
+-- cases, as we're doing 64-bit arithmetic.)
+--
+-- Example: on a 32-bit machine, the following produces a ~4KB bloom filter of
+-- @2^10@ 32-bit words, using 3 bits per element:
 --
 -- @
 --  do key <- read <$> getEnv "THE_SECRET_KEY"
---     b <- Bloom.new key 3 10
---     ...
+--     Bloom.new key 3 10
 -- @
 new :: SipKey
     -- ^ The secret key to be used for hashing values for this bloom filter.
@@ -210,11 +231,13 @@ new :: SipKey
     -> IO (BloomFilter a)
 new key k log2l = do
     -- In typed interface all of these conditions hold:
-    unless (log2l >= 0) $ error "in 'new', log2l must be >= 0"
-    unless (k > 0) $ error "in 'new', k must be > 0"
+    let !hash64Enough = isHash64Enough log2l k
+    unless (k > 0) $
+      throwIO $ BloomFilterParamException "in 'new', k must be > 0"
+    unless (log2l >= 0) $
+      throwIO $ BloomFilterParamException "in 'new', log2l must be >= 0"
 
-    let sizeBytes = sIZEOF_INT `uncheckedShiftL` log2l
-        hash64Enough = isHash64Enough log2l k
+    let !sizeBytes = sIZEOF_INT `uncheckedShiftL` log2l
     arr <- P.newAlignedPinnedByteArray sizeBytes aLIGNMENT_INT
     P.fillByteArray arr 0 sizeBytes (0x00)
 
@@ -290,9 +313,6 @@ membershipWordAndBitsFor bloom@(BloomFilter{..}) a
     | otherwise    = membershipWordAndBits128 (siphash128 key a) bloom
 
 
--- TODO test that we throw exceptions on bad inputs here, and make these proper
--- exceptions (since we expect this to be thrown in the 'untyped' interface):
-
 -- True if we can get enough hash bits from a Word64, and a runtime check
 -- sanity check of our arguments to 'new'. This is probably in "enough for
 -- anyone" territory currently:
@@ -301,15 +321,17 @@ isHash64Enough :: Int -> Int -> Bool
 isHash64Enough log2l k =
     let bitsReqd = log2l + k*log2w
      in if bitsReqd > 128
-          -- unreachable in typed interface:
-          then error "The passed parameters require over the maximum of 128 hash bits supported. Make sure: (log2l + k*(logBase 2 wordSizeInBits)) <= 128"
-          else if (log2l > 64)
-                 then error "You asked for (log2l > 64). We have no way to address memory in that range, and anyway that's way too big."
+          then throw $ BloomFilterParamException "The passed parameters require over the maximum of 128 hash bits supported. Make sure: (log2l + k*(logBase 2 wordSizeInBits)) <= 128"
+          else if (log2l > wordSizeInBits)
+                 then throw $ BloomFilterParamException "You asked for (log2l > 64). We have no way to address memory in that range, and anyway that's way too big."
                  else bitsReqd <= 64
 
 maskLog2wRightmostBits :: Int -- 2^log2w - 1
 maskLog2wRightmostBits | sIZEOF_INT == 8 = 63
                        | otherwise       = 31
+
+wordSizeInBits :: Int
+wordSizeInBits = sIZEOF_INT * 8
 
 log2w :: Int -- logBase 2 wordSizeInBits
 log2w | sIZEOF_INT == 8 = 6
