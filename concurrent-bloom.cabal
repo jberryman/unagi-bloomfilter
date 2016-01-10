@@ -102,7 +102,7 @@ executable dev-example
  ghc-options: -ddump-to-file -ddump-simpl -dsuppress-module-prefixes -dsuppress-uniques -ddump-core-stats -ddump-inlinings
  ghc-options: -O2  -rtsopts  
   -- for ghc bug(?) https://ghc.haskell.org/trac/ghc/ticket/11263
- ghc-options: -fsimpl-tick-factor=200
+ --ghc-options: -fsimpl-tick-factor=200
  
  -- Either do threaded for eventlogging and simple timing...
  -- ghc-options: -threaded -eventlog
