@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns, RecordWildCards, CPP #-}
 module Control.Concurrent.BloomFilter.Internal (
+-- TODO we might just move this to 'Internal' at the top level, since we'll export functions here for both mutable and immutable apis.
       new
     , BloomFilter(..)
     , BloomFilterParamException(..)
@@ -39,8 +40,6 @@ import Prelude hiding (lookup)
 --   - serialize/deserialize
 --     - don't store the secret key, but perhaps store a hash of the key for
 --       verification?
---   - insert (with Bool return i.e. does lookup)
---   - lookup (or "member" or "elem")
 --   - lossless union of two bloom filters (Monoid?)
 --     - probably just implement for pure/frozen filters for now (doing an atomic op on every word of a filter is probably bad new bears).
 --     - note also we can union any two bloom filters (as long as they're power of two size);
@@ -60,9 +59,22 @@ import Prelude hiding (lookup)
 --     - maybe freeze should return exposed constructor type (exposing immutable array)
 --   - approximating number of items, and size of union and intersection
 --   - bulk reads and writes, for performance: (especially good for pure interface fromList, etc.
+--      fromList implementation possibilities:
+--        1 - allocate new
+--          - unsafeInsert all into new (possibly prefetching next block)
+--          - non-threadsafe union with previous
+--        2 - hash and sort (as list or something)
+--          - memcpy previous
+--          - unsafeInsert in order into new
+--        3 - memcpy previous
+--          - unsafeInsert new, manually prefetching next.
 --     - re-order hashes for in-order cache line access (benchmark this)
 --     - consider prefetching
 --     - combine inter-word reads and writes.
+--   - consider a Scalable Bloom Filter -type approach (or variant):
+--     - CAS of linked list of filters
+--     - possible linearizability issues.
+--     - other operations become tricker or not doable.
 --
 -- Things that can happen later:
 --   - freezing/pure interface
@@ -123,8 +135,13 @@ import Prelude hiding (lookup)
  -   - limit typed interface to only k = 3?
  -   - keep 'key' in type? Awkward!
  -     - maybe we can enforce only a single "implicit" 'key' value for entire
- -        program using those singleton instance thingies? Then keep this out
- -        of the type.
+ -        program using NullaryTypeClasses? Then keep this out of the type.
+ -       Relevant here: configurations problem
+ -         "The conﬁgurations problem is to propagate run-time preferences
+ -         throughout a program, allowing multiple concurrent conﬁguration sets
+ -         to coexist safely under statically guaranteed separation..."
+ -         TODO is this relevant for the other type-level params we imagine?
+ -         TODO can the two be complimentary?: use a singleton class, but instantiate it dynamically with reflection? per:https://www.schoolofhaskell.com/user/thoughtpolice/using-reflection#dynamically-constructing-type-class-instances
  -   - constrain log2l <=64, and log2l+ k*log2w <=128 (or 64 for "fast" variant)
  -}
 -- (OLDER NOTES):
