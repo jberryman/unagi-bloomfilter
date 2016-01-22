@@ -172,8 +172,7 @@ data BloomFilter a = BloomFilter { key :: !SipKey
                                  , k :: !Int
                                  , hash64Enough :: Bool
                                  -- ^ if we need no more than 64-bits we can use the faster 'siphash64'
-                                 , l_minus1 :: !Int
-                                 -- ^ For fast modulo
+                                 , l_minus1 :: !Word64
                                  , log2l :: !Int
                                  , arr :: !(P.MutableByteArray RealWorld)
                                  }
@@ -217,7 +216,7 @@ new :: SipKey
     -> Int
     -- ^ @k@: Number of independent bits of @w@ to which we map an element. 3 is a good choice.
     -> Int
-    -- ^ @log2l@: The size of the filter, in machine words, as a power of 2.
+    -- ^ @log2l@: The size of the filter, in machine words, as a power of 2. e.g. @3@ means @2^3@ or @8@ machine words.
     -> IO (BloomFilter a)
 new key k log2l = do
     -- In typed interface all of these conditions hold:
@@ -238,9 +237,12 @@ membershipWordAndBits64 :: Hash64 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits64 #-}
 membershipWordAndBits64 !(Hash64 h) = \ !(BloomFilter{ .. }) ->
   assert (isHash64Enough log2l k) $
-    -- Use leftmost bits for membership word, and take member bits from right.
-    -- N.b. shiftR for possible 1-word filter when log2l = 0:
-    let !memberWord = fromIntegral (h `shiftR` (64-log2l))
+    -- From right: take all member bits, then take membership word. NOTE: for
+    -- union on different size filters to work we must not e.g. take the
+    -- leftmost log2l bits; we need lower-order bits to be the same between the
+    -- two filters.
+    let !memberWord = fromIntegral $
+           l_minus1 .&. (h `uncheckedShiftR` fromIntegral (k*log2w))
         !wordToOr = setKMemberBits 0x00 k h
 
      in (memberWord, wordToOr)
@@ -249,15 +251,15 @@ membershipWordAndBits128 :: Hash128 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits128 #-}
 membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
   assert (not $ isHash64Enough log2l k) $
-    -- Use leftmost bits for membership word, and take member bits from right,
-    -- then taking remaining member bits from h_1 (from the right)
-    let !bitsLeftForMemberBits_h_0 = 64-log2l
-        -- N.b. shiftR for possible 1-word filter when log2l = 0:
-        !memberWord = fromIntegral (h_0 `shiftR` bitsLeftForMemberBits_h_0)
-        (!kFor_h_0, !remainingBits_h_0) = bitsLeftForMemberBits_h_0 `quotRem` log2w
+    -- From right, on h_0: take as many member bits as you can, then take
+    -- membership word. (see above re: union). Then take remaining member bits
+    -- from h_1 (from the right):
+    let !memberWord = fromIntegral $
+           l_minus1 .&. (h_0 `uncheckedShiftR` fromIntegral (kFor_h_0*log2w))
+        (!kFor_h_0, !remainingBits_h_0) = (64-log2l) `quotRem` log2w
         !bitsForLastMemberBit_h_1 = assert (remainingBits_h_0 < log2w) $ -- for uncheckedShiftR
             log2w - remainingBits_h_0
-        -- Leaving one which we'll always build with (possibly 0)
+        -- Leaving one which we'll always build with (possibly 0) leftmost
         -- remainingBits_h_0 and the leftmost bits from h_1:
         !kFor_h_1 = (k - kFor_h_0) - 1
 
@@ -268,10 +270,8 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
         !wordToOrPart1 = setKMemberBits 0x00 kFor_h_1 h_1
         -- Build the final member bit with possible leftover bits from h_0
         !lastMemberBitPart0 =
-            -- clear left of range:
-            ((h_0 `uncheckedShiftL` log2l)
                 -- clear right of range:
-                  `shiftR` (64 - remainingBits_h_0)) -- n.b. possible 64 shift
+             (h_0 `shiftR` (64 - remainingBits_h_0)) -- n.b. possible 64 shift
                 -- align for combining with lastMemberBitPart1:
                   `uncheckedShiftL` bitsForLastMemberBit_h_1
         -- ...and leftmost bits from h_1:
@@ -334,7 +334,7 @@ uncheckedSetBit x i = x .|. (1 `uncheckedShiftL` i)
 uncheckedShiftR :: (Num a, FiniteBits a, Ord a) => a -> Int -> a
 {-# INLINE uncheckedShiftR #-}
 uncheckedShiftR a = \x->
-  assert (a >= 0) $
+  assert (a >= 0) $ -- make sure we don't smear sign w/ a bad fromIntegral cast
   assert (x < finiteBitSize a) $
   assert (x >= 0) $
     a `BitsHidden.unsafeShiftR` x

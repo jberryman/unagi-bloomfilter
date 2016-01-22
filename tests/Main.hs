@@ -106,7 +106,8 @@ insertSaturateTest = do
       wd <- readByteArray (arr bl) ix
       let fill = popCount (wd :: Word)
       when (fill < (wordSizeInBits - 5)) $
-        error "Bloomfilter doesn't look like it was saturated like we expected"
+        error $ "Bloomfilter doesn't look like it was saturated like we expected "
+                ++(show fill)++"  "++(show randKey)
 
 
 -- Smoke test for very small bloom filters:
@@ -129,10 +130,10 @@ membershipWordTests = do
     let sz33MB = 22
     -- membershipWordAndBits64 --------
     do let membershipWord = "1101001001001001001011"
-       let h | wordSizeInBits == 64 = Hash64 $ fromBits64 $ membershipWord++"         001111 001110 001101 001100 001011 001010 001001"
-             | otherwise            = Hash64 $ fromBits64 $ membershipWord++"1111111   01111  01110  01101  01100  01011  01010  01001"
-           --                                                                   \      \         7 membership bits (15..9)           /
-           --                                                                    \_ unused
+       let h | wordSizeInBits == 64 = Hash64 $ fromBits64 $            membershipWord++"   001111 001110 001101 001100 001011 001010 001001"
+             | otherwise            = Hash64 $ fromBits64 $ "1111111"++membershipWord++"    01111  01110  01101  01100  01011  01010  01001"
+           --                                                    \                     \         7 membership bits (15..9)           /
+           --                                                     \____ unused
        newOnlyNeeds64 <- Bloom.new (SipKey 1 1) 7 sz33MB
        assert (hash64Enough newOnlyNeeds64) $ return ()
        let (memberWordOut, wordToOr) =
@@ -176,7 +177,7 @@ membershipWordTests = do
       -- repeat above, but with one bit more in `l` so we need a single bit from h_1 --------
       let membershipWord' = "10001" --17
           h' = (\(lastMemberBitPt, (lastMemberBitRest:ks))->
-                 let h_0 = fromBits64 (membershipWord'++lastMemberBitPt++ks)
+                 let h_0 = fromBits64 (lastMemberBitPt++membershipWord'++ks)
                      h_1 = fromBits64 (lastMemberBitRest : replicate 63 '1') -- Ones to right ought to be ignored
                   in Hash128 h_0 h_1) $
                 splitAt (log2w-1) kPayload
@@ -192,8 +193,7 @@ membershipWordTests = do
         unless (wordToOr == wordToOrExpected) $
             error $ "membershipWordAndBitsJust128 wordToOr: expected "++(show wordToOrExpected)++" but got "++(show wordToOr)
 
-
-      -- Now using h_1 for exactly the last k bits:
+      -- Now exactly filling h_0 again, but also using h_1 for exactly the last k bits:
       let kFilling64Plus1 | wordSizeInBits == 64 = 11
                           | otherwise = 13
           memberBitsToSet64Plus1 = take kFilling64Plus1 [6..]
@@ -228,7 +228,7 @@ membershipWordTests = do
              h128 =
                let (w_0, w_rest) = splitAt rmdr_h_0 (memberWordPaddedBinStr 1)
                 in (\(x,y)-> Hash128 (fromBits64 x) (fromBits64 (w_rest++y))) $ splitAt 64 $
-                      (membershipWord'' ++w_0++
+                      (w_0++membershipWord''++
                          (concatMap memberWordPaddedBinStr [2..kFillingAll128]))
          newNeedsAll128 <- Bloom.new (SipKey 1 1) kFillingAll128 (length membershipWord'')
          assert (not $ hash64Enough newNeedsAll128) $ return ()
@@ -328,7 +328,7 @@ highFprTest = do
    in forM_ bloomParams $ \param@(payloadSz, ourLog2l, ourK)-> do
         let !loadedFpr = fpr payloadSz (2^ourLog2l) ourK wordSizeInBits
             payload = take payloadSz [2,4..] :: [Int]
-            antiPayloadSz = 100000
+            antiPayloadSz = 200000
             antiPayload = take antiPayloadSz [1,3..]
         randKey <- (,) <$> randomIO <*> randomIO
         bl <- Bloom.new (uncurry SipKey randKey) ourK ourLog2l
