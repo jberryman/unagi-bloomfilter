@@ -6,6 +6,7 @@ module Control.Concurrent.BloomFilter.Internal (
     , BloomFilterParamException(..)
     , insert
     , lookup
+    , unionInto
     , SipKey(..)
     , fpr
 
@@ -380,6 +381,43 @@ lookup bloom@(BloomFilter{..}) = \a-> do
 
 
 
+
+-- | /O(l)/. Write all elements in the first bloom filter into the second. This
+-- operation is lossless; ignoring writes to the source bloom filter that
+-- happen during this operation (see below), the target bloom filter will be
+-- identical to the filter produced had the elements been inserted into the
+-- target originally.
+--
+-- The source and target must have been created with the same key and
+-- @k@-value. In addition the target must not be larger (the @l@-value) than
+-- the source, /and/ they must both [use 128/64 bit hashes TODO link to helper
+-- function]. This throws a 'BloomFilterParamException' when those constraints
+-- are not met.
+--
+-- This operation is not linearizable with respect to 'insert'-type operations;
+-- elements being written to the source bloomfilter during this operation may
+-- or may not make it into the target "at random".
+unionInto :: BloomFilter a -- ^ Source, left unmodified.
+          -> BloomFilter a -- ^ Target, receiving elements from source.
+          -> IO ()
+unionInto src target = do
+    unless (key src == key target) $ throwIO $ BloomFilterParamException $
+      "SipKey of the source BloomFilter does not match target"
+    unless (k src == k target) $ throwIO $ BloomFilterParamException $
+      "k of the source BloomFilter does not match target"
+    unless (log2l src >= log2l target) $ throwIO $ BloomFilterParamException $
+      "log2l of the source BloomFilter is smaller than the target"
+    unless (hash64Enough src == hash64Enough target) $ throwIO $ BloomFilterParamException $
+      "either the source or target BloomFilter requires 128 hash bits while the other requires 64"
+
+    let target_l_minus1 = fromIntegral $ l_minus1 target
+        src_l_minus1 = fromIntegral $ l_minus1 src
+
+    forM_ [0.. src_l_minus1] $ \srcWordIx -> do
+      let !targetWordIx = srcWordIx .&. target_l_minus1
+      srcWord <- P.readByteArray (arr src) srcWordIx
+      assert (targetWordIx <= target_l_minus1) $
+        void $ fetchOrIntArray (arr target) targetWordIx srcWord
 
 
 

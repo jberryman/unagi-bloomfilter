@@ -73,6 +73,10 @@ main = do
 
     expectedExceptionsTest
 
+    -- combining operations:
+    unionSmokeTest
+    unionTests
+
     putStrLn "TESTS PASSED"
 
 -- Test exceptions that should only be possible to raise in untyped interface:
@@ -240,6 +244,62 @@ membershipWordTests = do
             error $ "membershipWordAndBits128-full memberWord: expected "++(show memberWordExpected)++" but got "++(show memberWordOut)
          unless (wordToOr == wordToOrExpected') $
             error $ "membershipWordAndBits128-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
+
+-- set a unique bit in each source and target word, check exact expected individual bits
+unionSmokeTest :: IO ()
+unionSmokeTest = do
+    b2 <- Bloom.new (SipKey 1 1) 3 1
+    b8 <- Bloom.new (SipKey 1 1) 3 3
+    let wds8 = zip [0..] $ map (2^) $ take 8 [(3::Int)..]
+    let f (ix,v) (x1,x2) | even ix = (x1.|.v, x2)
+                         | otherwise = (x1, x2.|.v)
+    let (expected_1,expected_2) = foldr f (2,4) wds8
+
+    writeByteArray (arr b2) 0 (2::Word)
+    writeByteArray (arr b2) 1 (4::Word)
+
+    forM_ wds8 $ \(ix,v)->
+      writeByteArray (arr b8) ix (v::Word)
+
+    b8 `unionInto` b2
+    actual_1 <- readByteArray (arr b2) 0
+    actual_2 <- readByteArray (arr b2) 1
+    unless (actual_1 == expected_1 && actual_2 == expected_2 && actual_1 > 0 && actual_2 > 0) $
+      error $ "Union insane: "++(show [expected_1,actual_1, expected_2, actual_2])
+
+unionTests :: IO ()
+unionTests = do
+  forM_ [19,20] $ \bigl-> forM_ [10..bigl] $ \littlel -> do
+    b1 <- Bloom.new (SipKey 1 1) 3 bigl
+    b2 <- Bloom.new (SipKey 1 1) 3 littlel
+    let xs = [200..600] :: [Int]
+    let ys = [400..800] :: [Int]
+    let nots = [0..199]
+    let xsys = [200..800]
+    mapM_ (Bloom.insert b1) xs
+    mapM_ (Bloom.insert b2) ys
+    b1 `Bloom.unionInto` b2
+    forM_ nots $ \v-> do
+      exsts <- Bloom.lookup b2 v
+      when exsts $ error $ (show (bigl,littlel,v))++": Found unexpected element"
+    forM_ xsys $ \v-> do
+      exsts <- Bloom.lookup b2 v
+      unless exsts $ error $ (show (bigl,littlel,v))++": Could not find expected element."
+
+  forM_ [0..10] $ \bigl-> forM_ [0..bigl] $ \littlel -> do
+    b1 <- Bloom.new (SipKey 2 2) 2 bigl
+    b2 <- Bloom.new (SipKey 2 2) 2 littlel
+    void $ Bloom.insert b1 'a'
+    void $ Bloom.insert b2 'b'
+    b1 `Bloom.unionInto` b2
+    forM_ "cdefghijkl" $ \v-> do
+      exsts <- Bloom.lookup b2 v
+      when exsts $ error $ (show (bigl,littlel,v))++": Found unexpected element"
+    forM_ "ab" $ \v-> do
+      exsts <- Bloom.lookup b2 v
+      unless exsts $ error $ (show (bigl,littlel,v))++": Could not find expected element."
+
+
 
 {-
  A NOTE ON TESTING FPR (from the paper)
