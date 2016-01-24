@@ -109,7 +109,7 @@ insertSaturateTest = do
     forM_ [0..3] $ \ix-> do
       wd <- readByteArray (arr bl) ix
       let fill = popCount (wd :: Word)
-      when (fill < (wordSizeInBits - 5)) $
+      when (fill < (wordSizeInBits - 10)) $
         error $ "Bloomfilter doesn't look like it was saturated like we expected "
                 ++(show fill)++"  "++(show randKey)
 
@@ -399,7 +399,7 @@ highFprTest = do
               (fromIntegral $ length $ filter id falsePs) / (fromIntegral antiPayloadSz)
 
         -- TODO proper statistical measure of accuracy of measured FPR
-        unless ((abs $ loadedFprMeasured - loadedFpr) < 0.03) $
+        unless ((abs $ loadedFprMeasured - loadedFpr) < 0.05) $
           error $ "Measured high FPR deviated from calculated FPR more than we expected: "
                    ++(fmtPct loadedFprMeasured)++" "++(fmtPct loadedFpr)
                    ++(show param)++"\n"++(show randKey)
