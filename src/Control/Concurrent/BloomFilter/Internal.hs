@@ -7,6 +7,7 @@ module Control.Concurrent.BloomFilter.Internal (
     , insert
     , lookup
     , unionInto
+    , intersectionInto
     , SipKey(..)
     , fpr
 
@@ -39,8 +40,11 @@ import Prelude hiding (lookup)
 
 -- Operations:
 --   - serialize/deserialize
---     - don't store the secret key, but perhaps store a hash of the key for
---       verification?
+--     - don't store the secret key, but 128 bit hash it with itself and store the first Word64
+--     - store architecture and insist they match (since everything is relative to word size)
+--     - store a version number:
+--       - this should correspond to the major version number of a breaking change
+--       - include golden tests with serialized values, ensuring they match
 --   - lossless union of two bloom filters (Monoid?)
 --     - probably just implement for pure/frozen filters for now (doing an atomic op on every word of a filter is probably bad new bears).
 --     - note also we can union any two bloom filters (as long as they're power of two size);
@@ -227,12 +231,17 @@ new key k log2l = do
     unless (log2l >= 0) $
       throwIO $ BloomFilterParamException "in 'new', log2l must be >= 0"
 
-    let !sizeBytes = sIZEOF_INT `uncheckedShiftL` log2l
-    arr <- P.newAlignedPinnedByteArray sizeBytes aLIGNMENT_INT
+    (arr, sizeBytes) <- newBloomArr log2l
     P.fillByteArray arr 0 sizeBytes (0x00)
 
     return $ BloomFilter { l_minus1 = (2^log2l)-1, .. }
 
+newBloomArr :: Int -> IO (P.MutableByteArray RealWorld, Int)
+newBloomArr log2l = do
+    let !sizeBytes = sIZEOF_INT `uncheckedShiftL` log2l
+    -- aligned: we assume atomic reads (no word tearing):
+    arr <- P.newAlignedPinnedByteArray sizeBytes aLIGNMENT_INT
+    return (arr,sizeBytes)
 
 membershipWordAndBits64 :: Hash64 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits64 #-}
@@ -255,6 +264,10 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
     -- From right, on h_0: take as many member bits as you can, then take
     -- membership word. (see above re: union). Then take remaining member bits
     -- from h_1 (from the right):
+    -- NO; TODO:
+    --   - take membership word from right of h_0
+    --   - use all of h_1 for member bits
+    --   - take remaining member bits from h_0 squeezed left
     let !memberWord = fromIntegral $
            l_minus1 .&. (h_0 `uncheckedShiftR` fromIntegral (kFor_h_0*log2w))
         (!kFor_h_0, !remainingBits_h_0) = (64-log2l) `quotRem` log2w
@@ -291,7 +304,7 @@ setKMemberBits :: Int -> Int -> Word64 -> Int
 {-# INLINE setKMemberBits #-}
 setKMemberBits !wd 0 _ = wd
 setKMemberBits !wd !k' !h' =
-    -- possible cast to 32-bit Int but we only need rightmost 5 or 6:
+    -- possible cast to 32-bit Int but we only need rightmost 5 or 6 bits:
   let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits
    in setKMemberBits (wd `uncheckedSetBit` memberBit) (k'-1) (h' `uncheckedShiftR` log2w)
 
@@ -348,13 +361,12 @@ uncheckedShiftL a = \x->
     a `BitsHidden.unsafeShiftL` x
 
 
--- | Atomically insert a new element into the bloom filter.
+-- | /O(size_of_element)/. Atomically insert a new element into the bloom
+-- filter.
 --
 -- This returns 'True' if the element /did not exist/ before the insert, and
 -- 'False' if the element did already exist (subject to false-positives; see
 -- 'lookup'). Note that this is reversed from @lookup@.
---
--- This operation is /O(size_of_element)/.
 insert :: Hashable a=> BloomFilter a -> a -> IO Bool
 {-# INLINE insert #-}
 insert bloom@(BloomFilter{..}) = \a-> do
@@ -362,16 +374,14 @@ insert bloom@(BloomFilter{..}) = \a-> do
     oldWord <- fetchOrIntArray arr memberWord wordToOr
     return $! (oldWord .|. wordToOr) /= oldWord
 
--- | Look up the value in the bloom filter, returning 'True' if the element is
--- possibly in the set, and 'False' if the element is /certainly not/ in the
--- set.
+-- | /O(size_of_element)/. Look up the value in the bloom filter, returning
+-- 'True' if the element is possibly in the set, and 'False' if the element is
+-- /certainly not/ in the set.
 --
 -- The likelihood that this returns 'True' on an element that was not
 -- previously 'insert'-ed depends on the parameters the filter was created
 -- with, and the number of elements already inserted. The 'fpr' function can
 -- help you estimate this.
---
--- This operation is /O(size_of_element)/.
 lookup :: Hashable a=> BloomFilter a -> a -> IO Bool
 {-# INLINE lookup #-}
 lookup bloom@(BloomFilter{..}) = \a-> do
@@ -382,11 +392,11 @@ lookup bloom@(BloomFilter{..}) = \a-> do
 
 
 
--- | /O(l)/. Write all elements in the first bloom filter into the second. This
--- operation is lossless; ignoring writes to the source bloom filter that
--- happen during this operation (see below), the target bloom filter will be
--- identical to the filter produced had the elements been inserted into the
--- target originally.
+-- | /O(l_src+l_target)/. Write all elements in the first bloom filter into the
+-- second. This operation is lossless; ignoring writes to the source bloom
+-- filter that happen during this operation (see below), the target bloom
+-- filter will be identical to the filter produced had the elements been
+-- inserted into the target originally.
 --
 -- The source and target must have been created with the same key and
 -- @k@-value. In addition the target must not be larger (the @l@-value) than
@@ -400,7 +410,28 @@ lookup bloom@(BloomFilter{..}) = \a-> do
 unionInto :: BloomFilter a -- ^ Source, left unmodified.
           -> BloomFilter a -- ^ Target, receiving elements from source.
           -> IO ()
-unionInto src target = do
+unionInto = combine fetchOrIntArray
+
+
+
+-- | /O(l_src+l_target)/. Make @target@ the intersection of the source and
+-- target sets.  This operation is "lossy" in that the false positive ratio of
+-- target after the operation will be higher than if the elements forming the
+-- intersection had been 'insert'-ed directly into target.
+--
+-- The constraints and comments re. linearizability in 'unionInto' also apply
+-- here.
+intersectionInto :: BloomFilter a -- ^ Source, left unmodified.
+                 -> BloomFilter a -- ^ Target, receiving elements from source.
+                 -> IO ()
+intersectionInto = combine fetchAndIntArray
+
+
+-- internal
+combine :: (P.MutableByteArray RealWorld -> Int -> Int -> IO x)
+        -> BloomFilter a -> BloomFilter a -> IO ()
+{-# INLINE combine #-}
+combine f = \src target -> do
     unless (key src == key target) $ throwIO $ BloomFilterParamException $
       "SipKey of the source BloomFilter does not match target"
     unless (k src == k target) $ throwIO $ BloomFilterParamException $
@@ -413,12 +444,39 @@ unionInto src target = do
     let target_l_minus1 = fromIntegral $ l_minus1 target
         src_l_minus1 = fromIntegral $ l_minus1 src
 
-    forM_ [0.. src_l_minus1] $ \srcWordIx -> do
-      let !targetWordIx = srcWordIx .&. target_l_minus1
-      srcWord <- P.readByteArray (arr src) srcWordIx
-      assert (targetWordIx <= target_l_minus1) $
-        void $ fetchOrIntArray (arr target) targetWordIx srcWord
+    -- unless source and target are the same size we must "shrink" source to
+    -- size of target onto an intermediate array first (necessary to support
+    -- the AND for intersection, and also faster because it uses fewer atomic
+    -- primops onto target):
+    srcArrShrunk <-
+      if target_l_minus1 == src_l_minus1
+        then return (arr src)
+        else assert (target_l_minus1 < src_l_minus1) $ do
+          (srcArrShrunk, sizeBytes) <- newBloomArr $ log2l target
+          -- initialize new array with an efficient copy of first chunk from
+          -- source:
+          P.copyMutableByteArray srcArrShrunk 0 (arr src) 0 sizeBytes
 
+          forM_ [(target_l_minus1+1).. src_l_minus1] $ \srcWordIx -> do
+            let !targetWordIx = srcWordIx .&. target_l_minus1
+            srcWord <- P.readByteArray (arr src) srcWordIx
+            assert (targetWordIx <= target_l_minus1) $
+              nonatomicFetchOrIntArray srcArrShrunk targetWordIx srcWord
+
+          assert (P.sizeofMutableByteArray srcArrShrunk ==
+                  P.sizeofMutableByteArray (arr target)) $
+            return srcArrShrunk
+
+    forM_ [0.. target_l_minus1] $ \ix -> do
+      srcWord <- P.readByteArray srcArrShrunk ix
+      f (arr target) ix srcWord
+
+
+nonatomicFetchOrIntArray :: P.MutableByteArray RealWorld -> Int -> Int -> IO Int
+nonatomicFetchOrIntArray ar ix wd = do
+  !before <- P.readByteArray ar ix
+  P.writeByteArray ar ix (before .|. wd)
+  return before
 
 
 {-

@@ -37,5 +37,15 @@ main = do
 
         , bench "lookup (128)" $ whnfIO (Bloom.lookup b_13_20 (1::Int))
         , bench "lookup x10 (128)" $ nfIO (mapM_ (Bloom.lookup b_13_20) [1..10])
+
+        , bench "unionInto (14 -> 14)" $ whnfIO $ unionBench 14 14
+        , bench "unionInto (20 -> 14)" $ whnfIO $ unionBench 20 14 -- 20 is 6x
+        , bench "unionInto (20 -> 20)" $ whnfIO $ unionBench 20 20
         ]
       ]
+
+unionBench :: Int -> Int -> IO ()
+unionBench bigl littlel = do
+    b1 <- Bloom.new (SipKey 1 1) 3 bigl
+    b2 <- Bloom.new (SipKey 1 1) 3 littlel
+    b1 `Bloom.unionInto` b2

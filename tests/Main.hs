@@ -76,6 +76,7 @@ main = do
     -- combining operations:
     unionSmokeTest
     unionTests
+    intersectionTests
 
     putStrLn "TESTS PASSED"
 
@@ -245,6 +246,9 @@ membershipWordTests = do
          unless (wordToOr == wordToOrExpected') $
             error $ "membershipWordAndBits128-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
 
+
+-- TODO a combine quickcheck test on membershipWordAndBits128/64, that makes sure that lower order bits are the same for pairs of filters and elements.
+
 -- set a unique bit in each source and target word, check exact expected individual bits
 unionSmokeTest :: IO ()
 unionSmokeTest = do
@@ -267,11 +271,24 @@ unionSmokeTest = do
     unless (actual_1 == expected_1 && actual_2 == expected_2 && actual_1 > 0 && actual_2 > 0) $
       error $ "Union insane: "++(show [expected_1,actual_1, expected_2, actual_2])
 
+    -- check identical size:
+    b8' <- Bloom.new (SipKey 1 1) 3 3
+    b8 `unionInto` b8'
+    forM_ wds8 $ \(ix,v)-> do
+      v' <- readByteArray (arr b8') ix
+      unless (v == v') $
+        error "Union smoke test on identical length filters failed."
+
 unionTests :: IO ()
 unionTests = do
-  forM_ [19,20] $ \bigl-> forM_ [10..bigl] $ \littlel -> do
-    b1 <- Bloom.new (SipKey 1 1) 3 bigl
-    b2 <- Bloom.new (SipKey 1 1) 3 littlel
+  forM_ [19,20] $ \bigl-> forM_ [10..bigl] $ \littlel ->
+   forM_ [3,11] $ \ourk -> do -- for 64 and 128
+    b1 <- Bloom.new (SipKey 1 1) ourk bigl
+    b2 <- Bloom.new (SipKey 1 1) ourk littlel
+    case ourk of
+     3 -> unless (hash64Enough b1) $ error "fix unionTests 64"
+     11 -> when (hash64Enough b1) $ error "fix unionTests 128"
+     _ -> error "fix unionTests"
     let xs = [200..600] :: [Int]
     let ys = [400..800] :: [Int]
     let nots = [0..199]
@@ -281,14 +298,19 @@ unionTests = do
     b1 `Bloom.unionInto` b2
     forM_ nots $ \v-> do
       exsts <- Bloom.lookup b2 v
-      when exsts $ error $ (show (bigl,littlel,v))++": Found unexpected element"
+      when exsts $ error $ (show (bigl,littlel,v,ourk))++": Found unexpected element"
     forM_ xsys $ \v-> do
       exsts <- Bloom.lookup b2 v
-      unless exsts $ error $ (show (bigl,littlel,v))++": Could not find expected element."
+      unless exsts $ error $ (show (bigl,littlel,v,ourk))++": Could not find expected element."
 
   forM_ [0..10] $ \bigl-> forM_ [0..bigl] $ \littlel -> do
-    b1 <- Bloom.new (SipKey 2 2) 2 bigl
-    b2 <- Bloom.new (SipKey 2 2) 2 littlel
+   forM_ [2,13] $ \ourk -> do
+    b1 <- Bloom.new (SipKey 2 2) ourk bigl
+    b2 <- Bloom.new (SipKey 2 2) ourk littlel
+    case ourk of
+     2 -> unless (hash64Enough b1) $ error "fix unionTests 64"
+     13 -> when (hash64Enough b1) $ error "fix unionTests 128"
+     _ -> error "fix unionTests"
     void $ Bloom.insert b1 'a'
     void $ Bloom.insert b2 'b'
     b1 `Bloom.unionInto` b2
@@ -300,6 +322,25 @@ unionTests = do
       unless exsts $ error $ (show (bigl,littlel,v))++": Could not find expected element."
 
 
+-- the union tests are sufficient to test 'combine'. Just do a sanity check here.
+intersectionTests :: IO ()
+intersectionTests =
+  forM_ [18,19] $ \bigl-> forM_ [10..bigl] $ \littlel -> do
+    b1 <- Bloom.new (SipKey 3 1) 5 bigl
+    b2 <- Bloom.new (SipKey 3 1) 5 littlel
+    let xs = [200..600] :: [Int]
+    let ys = [400..800] :: [Int]
+    let nots = [199..399]++[601..801]
+    let xsys = [400..600]
+    mapM_ (Bloom.insert b1) xs
+    mapM_ (Bloom.insert b2) ys
+    b1 `Bloom.intersectionInto` b2
+    forM_ nots $ \v-> do
+      exsts <- Bloom.lookup b2 v
+      when exsts $ error $ (show (bigl,littlel,v))++": Found unexpected element"
+    forM_ xsys $ \v-> do
+      exsts <- Bloom.lookup b2 v
+      unless exsts $ error $ (show (bigl,littlel,v))++": Could not find expected element."
 
 {-
  A NOTE ON TESTING FPR (from the paper)
