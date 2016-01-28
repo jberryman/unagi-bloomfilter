@@ -153,7 +153,6 @@ membershipWordTests = do
        unless (wordToOr == wordToOrExpected) $
            error $ "membershipWordAndBits64 wordToOr: expected "++(show wordToOrExpected)++" but got "++(show wordToOr)
 
-    -- membershipWordAndBits128 --------
     do
       -- first test filling exactly 64-bits:
       let membershipWord = "1001"  -- n.b. remaining bits divisible by log2w on both 32 and 64-bits
@@ -179,13 +178,14 @@ membershipWordTests = do
         unless (wordToOr == wordToOrExpected) $
             error $ "membershipWordAndBits64-full wordToOr: expected "++(show wordToOrExpected)++" but got "++(show wordToOr)
 
+
+    -- membershipWordAndBits128 --------
+
       -- repeat above, but with one bit more in `l` so we need a single bit from h_1 --------
       let membershipWord' = "10001" --17
-          h' = (\(lastMemberBitPt, (lastMemberBitRest:ks))->
-                 let h_0 = fromBits64 (lastMemberBitPt++membershipWord'++ks)
-                     h_1 = fromBits64 (lastMemberBitRest : replicate 63 '1') -- Ones to right ought to be ignored
-                  in Hash128 h_0 h_1) $
-                splitAt (log2w-1) kPayload
+          h' = let h_0 = fromBits64 $ take (64-length membershipWord') (cycle "10") ++ membershipWord'
+                   h_1 = fromBits64 $ take (64-length kPayload) (cycle "110") ++ kPayload
+                in Hash128 h_0 h_1
       newJustNeeds128 <- Bloom.new (SipKey 1 1) kFilling64 (length membershipWord')
       assert (not $ hash64Enough newJustNeeds128) $ return ()
       do
@@ -198,43 +198,15 @@ membershipWordTests = do
         unless (wordToOr == wordToOrExpected) $
             error $ "membershipWordAndBitsJust128 wordToOr: expected "++(show wordToOrExpected)++" but got "++(show wordToOr)
 
-      -- Now exactly filling h_0 again, but also using h_1 for exactly the last k bits:
-      let kFilling64Plus1 | wordSizeInBits == 64 = 11
-                          | otherwise = 13
-          memberBitsToSet64Plus1 = take kFilling64Plus1 [6..]
-      assert (maximum memberBitsToSet64Plus1 <= (wordSizeInBits-1)) $ return ()
-      let kPayload64Plus1 = concatMap memberWordPaddedBinStr $ memberBitsToSet64Plus1
-      newNeedsExactly64Plus1 <- Bloom.new (SipKey 1 1) kFilling64Plus1 (length membershipWord)
-      assert (not $ hash64Enough newNeedsExactly64Plus1) $ return ()
-      do
-        let hPlus1 =
-               (\(lastKForH1 , ksForH0)->
-                 let h_0 = fromBits64 (membershipWord++ksForH0)
-                     h_1 = fromBits64 (lastKForH1++(replicate (64-log2w) '1')) -- Ones to the right ought to be ignored
-                  in Hash128 h_0 h_1) $
-                splitAt log2w kPayload64Plus1
-        let wordToOrExpected' = foldl' setBit 0 memberBitsToSet64Plus1
-        let memberWordExpected = 9
-        let (memberWordOut, wordToOr) =
-               membershipWordAndBits128 hPlus1 newNeedsExactly64Plus1
-        unless (memberWordOut == memberWordExpected) $
-            error $ "membershipWordAndBits64-full memberWord: expected "++(show memberWordExpected)++" but got "++(show memberWordOut)
-        unless (wordToOr == wordToOrExpected') $
-            error $ "membershipWordAndBits64-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
 
       -- need all 128 bits --------
       do let kFillingAll128 | wordSizeInBits == 64 = 20
                             | otherwise            = 24
-             rmdr_h_0 = (64 - (length membershipWord'')) `mod` log2w
              memberWordExpected = 170
              membershipWord'' = printf "%08b" memberWordExpected
-             -- h128 = (\(x,y)-> Hash128 (fromBits64 x) (fromBits64 y)) $ splitAt 64 $
-             --          (membershipWord''++concatMap memberWordPaddedBinStr [1..kFillingAll128])
-             h128 =
-               let (w_0, w_rest) = splitAt rmdr_h_0 (memberWordPaddedBinStr 1)
-                in (\(x,y)-> Hash128 (fromBits64 x) (fromBits64 (w_rest++y))) $ splitAt 64 $
-                      (w_0++membershipWord''++
-                         (concatMap memberWordPaddedBinStr [2..kFillingAll128]))
+             memberWords = concatMap memberWordPaddedBinStr [1..kFillingAll128]
+             h128 = Hash128 (fromBits64 $ ks_0++membershipWord'') (fromBits64 ks_1)
+                      where (ks_0, ks_1) = splitAt ((length memberWords) - 64) memberWords
          newNeedsAll128 <- Bloom.new (SipKey 1 1) kFillingAll128 (length membershipWord'')
          assert (not $ hash64Enough newNeedsAll128) $ return ()
          let wordToOrExpected' = foldl' setBit 0 [1..kFillingAll128]
@@ -246,8 +218,28 @@ membershipWordTests = do
          unless (wordToOr == wordToOrExpected') $
             error $ "membershipWordAndBits128-full wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
 
+      -- need less than 128 bits, with 1s fill  --------
+      do let kJustOver = 13
+             memberWordExpected = 170
+             membershipWord'' = printf "%08b" memberWordExpected
+             memberWords = concatMap memberWordPaddedBinStr [1..kJustOver]
+             h128 = Hash128 (fromBits64 $ ks_0++pad_0++membershipWord'') (fromBits64 $ pad_1++ks_1)
+                      where (ks_0, ks_1) = splitAt ((length memberWords) - 64) memberWords
+                            pad_0 = replicate (64 - (length membershipWord'' + length ks_0)) '1'
+                            pad_1 = replicate (64 - (length ks_1)) '1'
+         newJustOver <- Bloom.new (SipKey 1 1) kJustOver (length membershipWord'')
+         assert (not $ hash64Enough newJustOver) $ return ()
+         let wordToOrExpected' = foldl' setBit 0 [1..kJustOver]
 
--- TODO a combine quickcheck test on membershipWordAndBits128/64, that makes sure that lower order bits are the same for pairs of filters and elements.
+         let (memberWordOut, wordToOr) =
+               membershipWordAndBits128 h128 newJustOver
+         unless (memberWordOut == memberWordExpected) $
+            error $ "membershipWordAndBits128-fullx memberWord: expected "++(show memberWordExpected)++" but got "++(show memberWordOut)
+         unless (wordToOr == wordToOrExpected') $
+            error $ "membershipWordAndBits128-fullx wordToOr: expected "++(show wordToOrExpected')++" but got "++(show wordToOr)
+
+
+
 
 -- set a unique bit in each source and target word, check exact expected individual bits
 unionSmokeTest :: IO ()
@@ -282,13 +274,9 @@ unionSmokeTest = do
 unionTests :: IO ()
 unionTests = do
   forM_ [19,20] $ \bigl-> forM_ [10..bigl] $ \littlel ->
-   forM_ [3,11] $ \ourk -> do -- for 64 and 128
+   forM_ ([3,11,12,13]++ if log2w == 6 then [10] else []) $ \ourk -> do -- for 64 and 128
     b1 <- Bloom.new (SipKey 1 1) ourk bigl
     b2 <- Bloom.new (SipKey 1 1) ourk littlel
-    case ourk of
-     3 -> unless (hash64Enough b1) $ error "fix unionTests 64"
-     11 -> when (hash64Enough b1) $ error "fix unionTests 128"
-     _ -> error "fix unionTests"
     let xs = [200..600] :: [Int]
     let ys = [400..800] :: [Int]
     let nots = [0..199]
@@ -304,13 +292,9 @@ unionTests = do
       unless exsts $ error $ (show (bigl,littlel,v,ourk))++": Could not find expected element."
 
   forM_ [0..10] $ \bigl-> forM_ [0..bigl] $ \littlel -> do
-   forM_ [2,13] $ \ourk -> do
+   forM_ [2,14] $ \ourk -> do
     b1 <- Bloom.new (SipKey 2 2) ourk bigl
     b2 <- Bloom.new (SipKey 2 2) ourk littlel
-    case ourk of
-     2 -> unless (hash64Enough b1) $ error "fix unionTests 64"
-     13 -> when (hash64Enough b1) $ error "fix unionTests 128"
-     _ -> error "fix unionTests"
     void $ Bloom.insert b1 'a'
     void $ Bloom.insert b2 'b'
     b1 `Bloom.unionInto` b2
@@ -321,13 +305,45 @@ unionTests = do
       exsts <- Bloom.lookup b2 v
       unless exsts $ error $ (show (bigl,littlel,v))++": Could not find expected element."
 
+  -- another to excercise 128-bit a little more:
+  forM_ [16,17] $ \bigl-> 
+   forM_ [9..18] $ \ourk -> do
+     let littlel = 16
+     b1 <- Bloom.new (SipKey 2 2) ourk bigl
+     b2 <- Bloom.new (SipKey 2 2) ourk littlel
+     void $ Bloom.insert b1 'a'
+     void $ Bloom.insert b2 'b'
+     b1 `Bloom.unionInto` b2
+     forM_ "cdefghijkl" $ \v-> do
+       exsts <- Bloom.lookup b2 v
+       when exsts $ error $ (show (bigl,littlel,v))++": Found unexpected element"
+     forM_ "ab" $ \v-> do
+       exsts <- Bloom.lookup b2 v
+       unless exsts $ error $ (show (bigl,littlel,v))++": Could not find expected element."
+
+  -- and using all 128 bits.
+  let kFillingAll128 | wordSizeInBits == 64 = 20
+                     | otherwise            = 24
+  b1 <- Bloom.new (SipKey 2 2) kFillingAll128 8
+  b2 <- Bloom.new (SipKey 2 2) kFillingAll128 7
+  void $ Bloom.insert b1 'a'
+  void $ Bloom.insert b2 'b'
+  b1 `Bloom.unionInto` b2
+  forM_ "cdefghijkl" $ \v-> do
+    exsts <- Bloom.lookup b2 v
+    when exsts $ error $ ": Found unexpected element"
+  forM_ "ab" $ \v-> do
+    exsts <- Bloom.lookup b2 v
+    unless exsts $ error $ ": Could not find expected element."
+
 
 -- the union tests are sufficient to test 'combine'. Just do a sanity check here.
 intersectionTests :: IO ()
 intersectionTests =
-  forM_ [18,19] $ \bigl-> forM_ [10..bigl] $ \littlel -> do
-    b1 <- Bloom.new (SipKey 3 1) 5 bigl
-    b2 <- Bloom.new (SipKey 3 1) 5 littlel
+  forM_ [18,19] $ \bigl-> forM_ [10..bigl] $ \littlel ->
+   forM_ [5,14] $ \ourk -> do
+    b1 <- Bloom.new (SipKey 3 1) ourk bigl
+    b2 <- Bloom.new (SipKey 3 1) ourk littlel
     let xs = [200..600] :: [Int]
     let ys = [400..800] :: [Int]
     let nots = [199..399]++[601..801]

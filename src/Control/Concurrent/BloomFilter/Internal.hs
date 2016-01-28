@@ -253,7 +253,7 @@ membershipWordAndBits64 !(Hash64 h) = \ !(BloomFilter{ .. }) ->
     -- two filters.
     let !memberWord = fromIntegral $
            l_minus1 .&. (h `uncheckedShiftR` fromIntegral (k*log2w))
-        !wordToOr = setKMemberBits 0x00 k h
+        !wordToOr = fst $ setKMemberBits 0x00 k h
 
      in (memberWord, wordToOr)
 
@@ -261,48 +261,35 @@ membershipWordAndBits128 :: Hash128 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits128 #-}
 membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
   assert (not $ isHash64Enough log2l k) $
-    -- From right, on h_0: take as many member bits as you can, then take
-    -- membership word. (see above re: union). Then take remaining member bits
-    -- from h_1 (from the right):
-    -- NO; TODO:
-    --   - take membership word from right of h_0
-    --   - use all of h_1 for member bits
-    --   - take remaining member bits from h_0 squeezed left
-    let !memberWord = fromIntegral $
-           l_minus1 .&. (h_0 `uncheckedShiftR` fromIntegral (kFor_h_0*log2w))
-        (!kFor_h_0, !remainingBits_h_0) = (64-log2l) `quotRem` log2w
-        !bitsForLastMemberBit_h_1 = assert (remainingBits_h_0 < log2w) $ -- for uncheckedShiftR
-            log2w - remainingBits_h_0
-        -- Leaving one which we'll always build with (possibly 0) leftmost
-        -- remainingBits_h_0 and the leftmost bits from h_1:
-        !kFor_h_1 = (k - kFor_h_0) - 1
+    -- Isolate member word by taking from lowest bits of h_0, take member bits
+    -- starting from right of h_1, possibly using leftmost from h_0 which we
+    -- splice onto the end as we shift and consume h_1:
+    let !memberWord = fromIntegral $ l_minus1 .&. h_0
+        !bitsReqd_h_0 = k*log2w - 64
+
+        !wordToOr =
+           if bitsReqd_h_0 <= 0
+             then fst $ setKMemberBits 0x00 k h_1
+             else -- we'll shift right just enough so we can OR with the last bit of h_1 shifted right:
+               let !bitsReqd_h_0_withOffs = bitsReqd_h_0 + (64 `rem` log2w)
+                   !h_0_alignedMasked =
+                     -- clear right:
+                     (h_0 `uncheckedShiftR` (64 - bitsReqd_h_0)) -- n.b. conditional guards shift
+                       -- align at offset:
+                       `uncheckedShiftL` (64 - bitsReqd_h_0_withOffs)
+                   !initialKToTake = bitsReqd_h_0_withOffs `quot` log2w
+                   (!wordToOrPart0, !h_1_shifted) = setKMemberBits 0x00 initialKToTake h_1
+
+                in assert (initialKToTake > 0) $
+                     fst $ setKMemberBits wordToOrPart0 (k-initialKToTake) (h_1_shifted.|.h_0_alignedMasked)
+
+     in (memberWord, wordToOr)
 
 
-        -- Fold in ks from h_0 (from right):
-        !wordToOrPart0 = setKMemberBits 0x00 kFor_h_0 h_0
-        -- Fold in ks from h_1 (from right):
-        !wordToOrPart1 = setKMemberBits 0x00 kFor_h_1 h_1
-        -- Build the final member bit with possible leftover bits from h_0
-        !lastMemberBitPart0 =
-                -- clear right of range:
-             (h_0 `shiftR` (64 - remainingBits_h_0)) -- n.b. possible 64 shift
-                -- align for combining with lastMemberBitPart1:
-                  `uncheckedShiftL` bitsForLastMemberBit_h_1
-        -- ...and leftmost bits from h_1:
-        !lastMemberBitPart1 = h_1 `uncheckedShiftR` (64-bitsForLastMemberBit_h_1)
-        !wordToOr = (wordToOrPart0.|.wordToOrPart1) `uncheckedSetBit`
-                       fromIntegral (lastMemberBitPart0.|.lastMemberBitPart1)
 
-     in assert (kFor_h_1 >= 0 && -- we may only need a few to make up remainder.
-               (kFor_h_0*log2w) <= 64  &&
-               (kFor_h_1*log2w) <= 64  &&
-               (kFor_h_0 + kFor_h_1 + 1) == k  &&
-               (kFor_h_1*log2w + remainingBits_h_0 + kFor_h_1*log2w) <= 128) $
-          (memberWord, wordToOr)
-
-setKMemberBits :: Int -> Int -> Word64 -> Int
+setKMemberBits :: Int -> Int -> Word64 -> (Int, Word64)
 {-# INLINE setKMemberBits #-}
-setKMemberBits !wd 0 _ = wd
+setKMemberBits !wd 0 h' = (wd, h')
 setKMemberBits !wd !k' !h' =
     -- possible cast to 32-bit Int but we only need rightmost 5 or 6 bits:
   let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits

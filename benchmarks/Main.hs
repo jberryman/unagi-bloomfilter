@@ -31,12 +31,19 @@ main = do
         ],
       bgroup "exported" [
           bench "siphash64 for comparison" $ whnf (siphash64 (SipKey 1 1)) (1::Int)
+
           -- best case, with no cache effects (I think):
         , bench "lookup (64)" $ whnfIO (Bloom.lookup b_5_20 (1::Int))
         , bench "lookup x10 (64)" $ nfIO (mapM_ (Bloom.lookup b_5_20) [1..10])
-
         , bench "lookup (128)" $ whnfIO (Bloom.lookup b_13_20 (1::Int))
         , bench "lookup x10 (128)" $ nfIO (mapM_ (Bloom.lookup b_13_20) [1..10])
+
+        , bench "insert (64)" $ whnfIO (Bloom.insert b_5_20 (1::Int))
+        , bench "insert x10 (64)" $ nfIO (mapM_ (Bloom.insert b_5_20) [1..10])
+        , bench "insert (128)" $ whnfIO (Bloom.insert b_13_20 (1::Int))
+        , bench "insert x10 (128)" $ nfIO (mapM_ (Bloom.insert b_13_20) [1..10])
+
+        -- TODO random lookups/inserts
 
         , bench "unionInto (14 -> 14)" $ whnfIO $ unionBench 14 14
         , bench "unionInto (20 -> 14)" $ whnfIO $ unionBench 20 14 -- 20 is 6x
