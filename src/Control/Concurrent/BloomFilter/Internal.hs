@@ -42,9 +42,11 @@ import Prelude hiding (lookup)
 --   - serialize/deserialize
 --     - don't store the secret key, but 128 bit hash it with itself and store the first Word64
 --     - store architecture and insist they match (since everything is relative to word size)
+--     - store TypeHash value
 --     - store a version number:
 --       - this should correspond to the major version number of a breaking change
 --       - include golden tests with serialized values, ensuring they match
+--     - store all params passed to new.
 --   - lossless union of two bloom filters (Monoid?)
 --     - probably just implement for pure/frozen filters for now (doing an atomic op on every word of a filter is probably bad new bears).
 --     - note also we can union any two bloom filters (as long as they're power of two size);
@@ -62,7 +64,7 @@ import Prelude hiding (lookup)
 --     - again this doesn't require type-level length tag; we can union fold one filter down to match the other.
 --   - freeze/thaw
 --     - maybe freeze should return exposed constructor type (exposing immutable array)
---   - approximating number of items, and size of union and intersection
+--   x approximating number of items, and size of union and intersection
 --   - bulk reads and writes, for performance: (especially good for pure interface fromList, etc.
 --      fromList implementation possibilities:
 --        1 - allocate new
@@ -83,84 +85,25 @@ import Prelude hiding (lookup)
 --
 -- Things that can happen later:
 --   - freezing/pure interface
---   - type-level embedding; too many downsides:
---     - need to encode key there too in order to be effective
---     - uselsess when deserializing
 --
--- Typing revisited:
---   - we could do type-level nat thing for `new` and not parameterize.
---     - with a little more work we could also allow user to pass in their own hash function.
---   - when deserializing we need to also get the type; we can't just serialize Typeable though! Maybe need static pointers?
 --
--- - We can handle serializing/deserializing by simply exposing internals (I guess)
 --
--- Observation:
---  - the user could map different types to different hash functions herself
---  - in that sense the bloom filter itself only cares about hash values as inputs.
+-- Typed interface:
+--   - parameterize by length, or at least have Bloom64 Bloom128
+--      - new takes a type-level nat regardless
+--   - parameterize by k (no big deal being static)
+--   - for sipkey: use NullaryTypeClasses or some more clever solution
+--         "The conﬁgurations problem is to propagate run-time preferences
+--         throughout a program, allowing multiple concurrent conﬁguration sets
+--         to coexist safely under statically guaranteed separation..."
+--         TODO is this relevant for the other type-level params we imagine?
+--         TODO can the two be complimentary?: use a singleton class, but instantiate it dynamically with reflection? per:https://www.schoolofhaskell.com/user/thoughtpolice/using-reflection#dynamically-constructing-type-class-instances
 --
--- Idea:
---  - hashabler should provide a method for a unique serializable and stable Typeable?
---  - this should be a UUID since it's going to need to be unique across all instances
---  - this should change when the data definition changes (same times we'd expect hash values to change?)
---  - should we consider this the "hash" of the type?
---  - Consider:
---     when we're serializing the type representation, it only makes sense to
---     serialize with respect to data (because a type can keep the same name
---     and transform over different versions), or to be more precise: we
---     serialize with respect to some aspect of the data that we care about.
---     (how to clarify this...?)
---  - name this `HashDomain`, with a constructor `Unique` for non-serializable
---  - provide the utility function for generating.
---
--- Randome notes:
---  - we could fix K to 3
---
---  deserializing (without type-level Natural markers):
---    - provide key (compared with a stored hash, maybe)
---    - hashDomain compared to stored
---    - k and m are internal, taken from deserialized
---
---  combining, with total type safety:
---    - we can always check equality of value level nats by doing natVal when deserializing
---    - static length MIGHT be problem
---      - ?
---    - static SipKey IS a problem
---      - ?
---
+--   - `new` variant that ensures fast 64-bit version.
+--   - deserializing, will have type ... -> Either String (BloomFilter x y z a)
+--     - we can always check equality of value level nats by doing natVal when deserializing
 
--- TODO
---   Maybe we should assume bloom parameters will be static
---   then we can tag bloom filter with type-level numeric params
---   - that way we can serialize/deserialize and combine (and have Monoid instance)
---   - we can also MAYBE make sure at compile time that 128 bits will be enough for the chosen parameters
---     -we could even provide a constraint `Faster w k l` that makes sure it's under 64 bits.
-{- TYPED 'new':
- -   - parameterize by: k, a, key
- - OR:
- -   - limit typed interface to only k = 3?
- -   - keep 'key' in type? Awkward!
- -     - maybe we can enforce only a single "implicit" 'key' value for entire
- -        program using NullaryTypeClasses? Then keep this out of the type.
- -       Relevant here: configurations problem
- -         "The conﬁgurations problem is to propagate run-time preferences
- -         throughout a program, allowing multiple concurrent conﬁguration sets
- -         to coexist safely under statically guaranteed separation..."
- -         TODO is this relevant for the other type-level params we imagine?
- -         TODO can the two be complimentary?: use a singleton class, but instantiate it dynamically with reflection? per:https://www.schoolofhaskell.com/user/thoughtpolice/using-reflection#dynamically-constructing-type-class-instances
- -   - constrain log2l <=64, and log2l+ k*log2w <=128 (or 64 for "fast" variant)
- -}
--- (OLDER NOTES):
---  - make whole thing serializable (so need consistent hashing)
---    - NOTE!: we need to make sure that hashing is cross-platform
---      AAANND that we use the *same* hashing library. Easiest way
---      might be to fix the version of hashing lib, AND store a version number
---      in serialized form.
---  - function for OR combining bloom filters (perhaps basis for distributed setup)
---  - offer a function (or table) for calculating optimal k
---      - offer guidance on how to use it
---  - benchmarks and performance tuning
---  - can we make it durable/persistent and consistent via some easy mechanism?
---      (how do atomic operations and mmap relate?)
+
 
 
 
@@ -549,20 +492,6 @@ fpr nI lI kI wI =
 
 
 
--- Not particularly fast; if needs moar fast see
---   http://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
--- 
-nextHighestPowerOfTwo :: Int -> Int
-nextHighestPowerOfTwo 0 = 1
-nextHighestPowerOfTwo n 
-    | n > maxPowerOfTwo = error $ "The next power of two greater than "++(show n)++" exceeds the highest value representable by Int."
-    | otherwise = 
-        let !nhp2 = 2 ^ (ceiling (logBase 2 $ fromIntegral $ abs n :: Float) :: Int)
-         -- ensure return value is actually a positive power of 2:
-         in assert (nhp2 > 0 && popCount (fromIntegral nhp2 :: Word) == 1)
-              nhp2
-
-  where maxPowerOfTwo = (floor $ sqrt $ (fromIntegral (maxBound :: Int)::Float)) ^ (2::Int)
 
 
 # ifdef EXPORT_INTERNALS
