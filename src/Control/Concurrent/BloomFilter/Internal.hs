@@ -446,13 +446,9 @@ fpr nI lI kI =
 
 -- | An estimate of the false-positive rate for a bloom-1 filter. For a filter
 -- with the provided parameters and having @n@ elements, the value returned
--- here is the precentage, over the course of many queries for elements /not/ in
+-- here is the percentage, over the course of many queries for elements /not/ in
 -- the filter, of those queries which would be expected to return an incorrect
 -- @True@ result.
---
--- Note this is an approximation of a flawed equation (and may also have been
--- implemented incorrectly). It seems to be reasonably accurate though, except
--- when the calculated fpr exceeds 70% or so. See the test suite.
 --
 -- This function is slow but the complexity is bounded and can accept inputs of
 -- any size.
@@ -484,9 +480,10 @@ fpr nI lI kI wI =
         | otherwise = log 0 -- TODO okay?
 
     logFactorial x
-        | x <= 100  = sum $ map log [1..x]
-         -- else use Stirling's approximation with error < 0.89%:
-        | otherwise = x * log x - x
+        -- TODO memoize in array:
+        | x <= 500  = sum $ map log [1..x]
+         -- else use Stirling's approximation when error doesn't seem to affect
+        | otherwise = x * log x - x + log (sqrt (2*pi*x))
 
     summation low hi = sum . \f-> map f [low..hi]
 

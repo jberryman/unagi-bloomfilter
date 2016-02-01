@@ -436,11 +436,26 @@ highFprTest = do
         , (500, 6, 1)
         , (1000, 5, 2)
 
-        -- fpr seems to get inaccurate above ~ 80%: TODO
-        -- , (625, 3, 2)
-        -- , (2500, 5, 2)  -- 84.42%  measured  vs.  96.29% calculated
-        -- , (2450, 5, 2)  -- 83.35%  measured  vs.  89.37% calculated
-        -- , (2400, 5, 2)  -- 81.71%  measured  vs.  84.83% calculated
+        , (200, 5, 2) -- low single-digit FPR
+        , (500, 6, 2)
+
+        -- for small sizes, high-ish loads
+        , (625, 4, 2)  -- 51% measured, 48% calculated
+        , (625, 3, 2)  -- 83% measured, 78% calculated
+        , (700, 3, 2)
+        , (750, 3, 2)
+        , (750, 3, 3)
+        -- 50% fp or lower:
+        , (350, 3, 2)
+        , (200, 3, 2)
+        , (150, 3, 2)
+        -- > 90% fpr
+        , (2000, 4, 2)
+        , (2000, 4, 3)
+
+        , (2500, 5, 2)
+        , (2450, 5, 2)
+        , (2400, 5, 2)
         ]
    in forM_ bloomParams $ \param@(payloadSz, ourLog2l, ourK)-> do
         let !loadedFpr = fpr payloadSz (2^ourLog2l) ourK wordSizeInBits
@@ -455,8 +470,7 @@ highFprTest = do
         let !loadedFprMeasured =
               (fromIntegral $ length $ filter id falsePs) / (fromIntegral antiPayloadSz)
 
-        -- TODO proper statistical measure of accuracy of measured FPR
-        unless ((abs $ loadedFprMeasured - loadedFpr) < 0.05) $
+        unless ((abs $ loadedFprMeasured - loadedFpr) < 0.03) $
           error $ "Measured high FPR deviated from calculated FPR more than we expected: "
                    ++(fmtPct loadedFprMeasured)++" "++(fmtPct loadedFpr)
                    ++(show param)++"\n"++(show randKey)
