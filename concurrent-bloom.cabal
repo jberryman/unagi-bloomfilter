@@ -7,8 +7,7 @@ description:
   .
   A bloom filter is a probabilistic, constant-space, set-like data structure
   supporting insertion and membership queries. This implementation is backed by
-  SipHash so can safely consume untrusted inputs, and exposes both a more
-  type-safe API and a more flexible low-level API.
+  SipHash so can safely consume untrusted inputs.
   .
   TODO benchmark comparison image
 

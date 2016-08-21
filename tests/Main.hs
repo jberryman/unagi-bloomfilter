@@ -419,7 +419,7 @@ serializeGoldenTests = do
           return x
 
         let path = "tests/serialized/"++(show k)++"_"++(show log2l)++".64.bytestring"
-        bSerNow <- Bloom.unsafeSerialize b
+        bSerNow <- unsafeSerialize b
         -- B.writeFile path bSerNow  -- UNCOMMENT TO REGENERATE:
         bSerStored <- B.readFile path
         unless (bSerNow == bSerStored) $ 
@@ -444,7 +444,7 @@ serializeRoundtripsTest = do
       void $ Bloom.insert b x
 
     bSer <- Bloom.serialize b
-    bUnsafeSer <- Bloom.unsafeSerialize b
+    bUnsafeSer <- unsafeSerialize b
     unless (bSer == bUnsafeSer) $
       error $ "Unsafe and safe serialize produced different bytestrings with"++(show (k,log2l))
     b'  <- Bloom.deserialize key bSer

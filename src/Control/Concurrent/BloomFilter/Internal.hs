@@ -1,6 +1,10 @@
 {-# LANGUAGE BangPatterns, RecordWildCards, CPP, ScopedTypeVariables #-}
 module Control.Concurrent.BloomFilter.Internal (
--- TODO we might just move this to 'Internal' at the top level, since we'll export functions here for both mutable and immutable apis.
+{- | Some additional unsafe, low-level, and internal functions are exposed here
+   for advanced users. The API should remain stable, except that functions may
+   be added and no promises are made about the internals of the 'BloomFilter'
+   type itself.
+ -}
       new
     , BloomFilter(..)
     , BloomFilterException(..)
@@ -15,7 +19,7 @@ module Control.Concurrent.BloomFilter.Internal (
     , serialize
     , unsafeSerialize
     , deserialize
-    , deserializeByteArray -- TODO mark as low-level
+    , deserializeByteArray
 
 # ifdef EXPORT_INTERNALS
   -- * Internal functions exposed for testing; you shouldn't see these
@@ -597,6 +601,11 @@ unsafeSerialize b@BloomFilter{..} = do
     return $ 
       PS (ForeignPtr addr (PlainPtr arr')) 0 (P.sizeofMutableByteArray arr)
 
+-- | Deserialize a 'BloomFilter' from a @ByteString@ created with 'serialize'
+-- or 'unsafeSerialize'. The key that was used to create the bloom filter is
+-- not stored for security, and must be provided here. However if the key
+-- provided does not match the key it was originally created with, a
+-- 'BloomFilterException' will be thrown.
 deserialize :: StableHashable a=> SipKey -> ByteString -> IO (BloomFilter a)
 deserialize key (PS fp@(ForeignPtr _ arrWrapped) off len) = do
     log2l <- log2lFromArraySize len
