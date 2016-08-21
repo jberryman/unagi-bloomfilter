@@ -25,7 +25,9 @@ module Control.Concurrent.BloomFilter.Internal (
     , wordSizeInBits
     , uncheckedSetBit
     , isHash64Enough
+    , log2lFromArraySize
     , assertionCanary
+    , bytes64, unbytes64
 # endif
     )
     where
@@ -233,10 +235,10 @@ log2lFromArraySize :: Int{-bytes-} -> IO Int
 log2lFromArraySize sz = 
   -- TODO throw a proper exc
   either (error) return $ do
-    let dataSz = sz - sIZEOF_METADATA
-        log2lFloat = logBase 2 (fromIntegral dataSz :: Float)
+    let dataSzBytes = sz - sIZEOF_METADATA
+        log2lFloat = logBase 2 ((fromIntegral dataSzBytes / fromIntegral sIZEOF_INT) :: Float)
         log2l = floor log2lFloat
-    unless (dataSz > 0) $ Left "Array is not large enough to be a serialized bloom filter"
+    unless (dataSzBytes >= sIZEOF_INT) $ Left "Array is not large enough to be a serialized bloom filter"
     unless (fromIntegral log2l == log2lFloat) $ Left "Array is an unexpected size for a serialized bloom filter"
     return log2l
   
@@ -603,11 +605,10 @@ metadataBytes bl@BloomFilter{..} =
 hashSipKey :: SipKey -> Hash64 (Word64, Word64)
 hashSipKey k@(SipKey w0 w1) = siphash64 k (w0, w1)
 
--- TODO test this somehow
 populateMetadata :: StableHashable a=> BloomFilter a -> IO ()
 populateMetadata b@BloomFilter{..} = do
-    assert (P.sizeofMutableByteArray arr == 2^log2l + sIZEOF_METADATA) $ return ()
     let !sizeDataBytes = sIZEOF_INT `uncheckedShiftL` log2l
+    assert (P.sizeofMutableByteArray arr == sizeDataBytes + sIZEOF_METADATA) $ return ()
     forM_ (zip [sizeDataBytes..] $ metadataBytes b) $ 
         uncurry (P.writeByteArray arr)
 
@@ -636,7 +637,6 @@ unsafeSerialize b@BloomFilter{..} = do
     return $ 
       PS (ForeignPtr addr (PlainPtr arr')) 0 (P.sizeofMutableByteArray arr)
 
--- TODO test doing then undoing operations to the bytestring and make sure this doesn't break.
 deserialize :: StableHashable a=> SipKey -> ByteString -> IO (BloomFilter a)
 deserialize key (PS fp@(ForeignPtr _ arrWrapped) off len) = do
     log2l <- log2lFromArraySize len
@@ -672,10 +672,10 @@ deserializeByteArray :: forall a. StableHashable a=> SipKey -> P.MutableByteArra
 deserializeByteArray key arr = do
   let len = P.sizeofMutableByteArray arr
   log2lActual <- log2lFromArraySize len
-  let metadataIx = floor ((2::Float)^log2lActual)
-  assert (metadataIx + sIZEOF_METADATA == len) $ return ()
+  let metadataBytesIx = sIZEOF_INT `uncheckedShiftL` log2lActual
+  assert (metadataBytesIx + sIZEOF_METADATA == len) $ return ()
   -- read bytes-at-a-time (endianness) and reconstruct metadata:
-  byts <- forM (take sIZEOF_METADATA [metadataIx..]) $ P.readByteArray arr
+  byts <- forM (take sIZEOF_METADATA [metadataBytesIx..]) $ P.readByteArray arr
   let go [] = []
       go (b0:b1:b2:b3:b4:b5:b6:b7:bs) = unbytes64 [b0,b1,b2,b3,b4,b5,b6,b7] : go bs
       go _ = error "Bug: somehow sIZEOF_METADATA could not be chunked evenly into Word64s"
@@ -719,7 +719,6 @@ deserializeByteArray key arr = do
 tpHashOf :: StableHashable a => proxy a -> Word64
 tpHashOf = typeHashWord . typeHashOfProxy
 
--- TODO quickcheck these together:
 bytes64 :: Word64 -> [Word8]
 {-# INLINE bytes64 #-}
 bytes64 wd = [ shifted 56, shifted 48, shifted 40, shifted 32
