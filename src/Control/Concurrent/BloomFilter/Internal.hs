@@ -3,7 +3,7 @@ module Control.Concurrent.BloomFilter.Internal (
 -- TODO we might just move this to 'Internal' at the top level, since we'll export functions here for both mutable and immutable apis.
       new
     , BloomFilter(..)
-    , BloomFilterParamException(..)
+    , BloomFilterException(..)
     , insert
     , lookup
     , unionInto
@@ -15,7 +15,7 @@ module Control.Concurrent.BloomFilter.Internal (
     , serialize
     , unsafeSerialize
     , deserialize
-    -- , deserializeByteArray -- TODO mark as low-level, and document ?
+    , deserializeByteArray -- TODO mark as low-level
 
 # ifdef EXPORT_INTERNALS
   -- * Internal functions exposed for testing; you shouldn't see these
@@ -51,53 +51,15 @@ import Control.Monad
 import Data.Word(Word64, Word8)
 import Prelude hiding (lookup)
 
--- Operations:
---   - serialize/deserialize
---     - don't store the secret key, but 128 bit hash it with itself and store the first Word64
---       - ALTHOUGH: if we don't type the key we could store the key and this would make serialization much easier...
---       - BUT THEN AGAIN: if we don't type-check the key, the user could still store it and send it along in another way easily, through a different channel.
---     - store architecture and insist they match (since everything is relative to word size)
---       - NOTE: this could be changed later.
---     - store TypeHash value
---     - store a version number:
---       - this should correspond to the major version number of a breaking change
---       - include golden tests with serialized values, ensuring they match
---     - store all params passed to new.
---
---   
---
---
---   - lossless union of two bloom filters (Monoid?)
---     - probably just implement for pure/frozen filters for now (doing an atomic op on every word of a filter is probably bad new bears).
---     - note also we can union any two bloom filters (as long as they're power of two size);
---       we simply fold the larger in on itself until it matches the smaller
---       SO DO WE CARE ABOUT HAVING THE LENGTH AT THE TYPE LEVEL?
---       (MAYBE: we still want that for `new` to ensure sufficient hash bits
---               But we only need a typelevel nat arg right? Not a tag.
---               The downside is just that we can't have a type-checked union,
---               which is probably not a big deal.
---               BUT: is this a proper Monoid when it's "lossy"?
---       (After thought): this perhaps can only easily be a semi-group, since we can't insert into empty
---                        so implement an operation `union` which we can make Semigroup.<> when it lands in base. (then deprecate `union` where we can offer a Semigroup instance)
---
---      - we also maybe have to include a TypeHash for whatever value for e.g. (Word64, Word64) or whatever we hash the sipkey as.
---
---   - lossy intersection of two bloom filters (FPR becomes at most the FPR of one of constituents, but may be more than if single were created from scratch)
---     - again this doesn't require type-level length tag; we can union fold one filter down to match the other.
---   - freeze/thaw
---     - maybe freeze should return exposed constructor type (exposing immutable array)
---   x approximating number of items, and size of union and intersection
---
+-- Future operations:
 --   - memory-mapped bloomfilter for durability (which of ACID do we get?). See 'vector-mmap' package?
 --     - allow opening mmap-ed file directly from serialized form?
---
---
--- Things that can happen later:
---   - freezing/pure/ST interface
+--   - approximating number of items, and size of union and intersection
+--   - freezing/pure/ST interface (e.g. Data.BloomFilter)
 --     - API: 
 --         - only allow writes in ST (copying for each write is awful)
 --         - provide a fromList that uses ST, for convenience
---         - querying and combining can be regural pure interface
+--         - querying and combining can be regural pure interface (Semigroup)
 --          
 --   - bulk reads and writes, for performance: (especially good for pure interface fromList, etc.
 --      fromList implementation possibilities:
@@ -118,18 +80,21 @@ import Prelude hiding (lookup)
 --     - other operations become tricker or not doable.
 --
 --
---
---
--- Typed interface:
---   - parameterize by length, or at least have Bloom64 (faster, uses only 64-bit hashes) Bloom128
---      - new takes a type-level nat regardless
+-- Future typed interface:
+--   - parameterize by length, or at least have separate Bloom64 (faster, uses only 64-bit hashes) and Bloom128 functions.
+--      - new takes a type-level nat regardless of whether we carry that around in a parameter
 --   - parameterize by k (no big deal being static)
---   - for sipkey: use NullaryTypeClasses or some more clever solution
+--   - for sipkey: 
+--       - use NullaryTypeClasses or some more clever solution
 --         "The conﬁgurations problem is to propagate run-time preferences
 --         throughout a program, allowing multiple concurrent conﬁguration sets
 --         to coexist safely under statically guaranteed separation..."
 --         TODO is this relevant for the other type-level params we imagine?
 --         TODO can the two be complimentary?: use a singleton class, but instantiate it dynamically with reflection? per:https://www.schoolofhaskell.com/user/thoughtpolice/using-reflection#dynamically-constructing-type-class-instances
+--       - Or use a type lit that corresponds to an environment variable, and tag
+--         - the user could shoot himself in the foot by changing the environment and break this scheme
+--            but that's probably okay.
+--         - what if user wants to pass it as a command line arg or something? Is this equally compatible with windows?
 --
 --   - `new` variant that ensures fast 64-bit version.
 --   - deserializing, will have type ... -> Either String (BloomFilter x y z a)
@@ -158,23 +123,21 @@ data BloomFilter a = BloomFilter { key :: !SipKey
                                  }
 
 
--- TODO just change this to BloomFilterError for now, and remove references to the 'pure' interface.
-
--- | Exceptions raised because of invalid parameters passed to 'new' or other
--- invalid internal states from making about with BloomFilter internals. These
--- should never be raised when using our Typed interface.
-newtype BloomFilterParamException = BloomFilterParamException String
+-- | Exceptions that may be thrown by operations in this library.
+newtype BloomFilterException = BloomFilterException String
     deriving (Show, Typeable)
 
-instance Exception BloomFilterParamException
+instance Exception BloomFilterException
 
+throwBloom :: String -> IO a
+throwBloom = throwIO . BloomFilterException
 
 -- | Create a new bloom filter of elements of type @a@ with the given hash key
 -- and parameters. 'fpr' can be useful for calculating the @k@ parameter, or
 -- determining a good filter size.
 --
 -- The parameters must satisfy the following conditions, otherwise a
--- 'BloomFilterParamException' will be thrown:
+-- 'BloomFilterException' will be thrown:
 --
 --   - @k > 0@
 --   - @log2l >= 0 && log2l <= wordSizeInBits@
@@ -213,9 +176,9 @@ new key k log2l = do
 checkParamInvariants :: Int -> Int -> IO ()
 checkParamInvariants k log2l = do
     unless (k > 0) $
-      throwIO $ BloomFilterParamException "in 'new', k must be > 0"
+      throwBloom "in 'new', k must be > 0"
     unless (log2l >= 0) $
-      throwIO $ BloomFilterParamException "in 'new', log2l must be >= 0"
+      throwBloom "in 'new', log2l must be >= 0"
 
 -- We leave a buffer at the end of the data portion of the filter large enough
 -- to store metadata for serialization, so we don't have to do any copying for
@@ -233,8 +196,7 @@ newBloomArr log2l = do
 
 log2lFromArraySize :: Int{-bytes-} -> IO Int
 log2lFromArraySize sz = 
-  -- TODO throw a proper exc
-  either (error) return $ do
+  either throwBloom return $ do
     let dataSzBytes = sz - sIZEOF_METADATA
         log2lFloat = logBase 2 ((fromIntegral dataSzBytes / fromIntegral sIZEOF_INT) :: Float)
         log2l = floor log2lFloat
@@ -242,7 +204,6 @@ log2lFromArraySize sz =
     unless (fromIntegral log2l == log2lFloat) $ Left "Array is an unexpected size for a serialized bloom filter"
     return log2l
   
-
 
 
 membershipWordAndBits64 :: Hash64 a -> BloomFilter a -> (Int, Int)
@@ -314,9 +275,9 @@ isHash64Enough :: Int -> Int -> Bool
 isHash64Enough log2l k =
     let bitsReqd = log2l + k*log2w
      in if bitsReqd > 128
-          then throw $ BloomFilterParamException "The passed parameters require over the maximum of 128 hash bits supported. Make sure: (log2l + k*(logBase 2 wordSizeInBits)) <= 128"
+          then throw $ BloomFilterException "The passed parameters require over the maximum of 128 hash bits supported. Make sure: (log2l + k*(logBase 2 wordSizeInBits)) <= 128"
           else if (log2l > wordSizeInBits)
-                 then throw $ BloomFilterParamException "You asked for (log2l > 64). We have no way to address memory in that range, and anyway that's way too big."
+                 then throw $ BloomFilterException "You asked for (log2l > 64). We have no way to address memory in that range, and anyway that's way too big."
                  else bitsReqd <= 64
 
 maskLog2wRightmostBits :: Int -- 2^log2w - 1
@@ -388,10 +349,9 @@ lookup bloom@(BloomFilter{..}) = \a-> do
 -- inserted into the target originally.
 --
 -- The source and target must have been created with the same key and
--- @k@-value. In addition the target must not be larger (the @l@-value) than
--- the source, /and/ they must both [use 128/64 bit hashes TODO link to helper
--- function]. This throws a 'BloomFilterParamException' when those constraints
--- are not met.
+-- @k@-value. In addition the target must not be larger (i.e. the @l@-value)
+-- than the source, /and/ they must both use 128/64 bit hashes. This throws a
+-- 'BloomFilterException' when those constraints are not met.
 --
 -- This operation is not linearizable with respect to 'insert'-type operations;
 -- elements being written to the source bloomfilter during this operation may
@@ -421,13 +381,13 @@ combine :: (P.MutableByteArray RealWorld -> Int -> Int -> IO x)
         -> BloomFilter a -> BloomFilter a -> IO ()
 {-# INLINE combine #-}
 combine f = \src target -> do
-    unless (key src == key target) $ throwIO $ BloomFilterParamException $
+    unless (key src == key target) $ throwBloom $
       "SipKey of the source BloomFilter does not match target"
-    unless (k src == k target) $ throwIO $ BloomFilterParamException $
+    unless (k src == k target) $ throwBloom $
       "k of the source BloomFilter does not match target"
-    unless (log2l src >= log2l target) $ throwIO $ BloomFilterParamException $
+    unless (log2l src >= log2l target) $ throwBloom $
       "log2l of the source BloomFilter is smaller than the target"
-    unless (hash64Enough src == hash64Enough target) $ throwIO $ BloomFilterParamException $
+    unless (hash64Enough src == hash64Enough target) $ throwBloom $
       "either the source or target BloomFilter requires 128 hash bits while the other requires 64"
 
     let target_l_minus1 = fromIntegral $ l_minus1 target
@@ -570,8 +530,8 @@ sIZEOF_METADATA, mETADATA_WORDS :: Int
 sIZEOF_METADATA = 8*mETADATA_WORDS
 mETADATA_WORDS = 8
 
-vERSION :: Word64
-vERSION = 0
+sERIALIZATION_VERSION :: Word64
+sERIALIZATION_VERSION = 0
   
 
 -- Return metadata for serialization from the ADT
@@ -579,14 +539,14 @@ metadataBytes :: StableHashable a=> BloomFilter a -> [Word8]
 metadataBytes bl@BloomFilter{..} = 
   let keyHash = hashSipKey key
       bs = 
-       [ vERSION            -- serialization format version
-       , tpHashOf bl        -- for verifying we deserialize to the correct element type
-       , hashWord64 keyHash -- for verifying key (we don't wish to store it)
-       , tpHashOf keyHash   -- ensures sanity of the hashing of our key
+       [ sERIALIZATION_VERSION -- serialization format version
+       , tpHashOf bl           -- for verifying we deserialize to the correct element type
+       , hashWord64 keyHash    -- for verifying key (we don't wish to store it)
+       , tpHashOf keyHash      -- ensures sanity of the hashing of our key
        , fromIntegral wordSizeInBits
        , fromIntegral k 
        , fromIntegral log2l 
-       , 0x0000             -- some padding for the hell of it; we can make the above more compact later too, if we want forwards compatibility.
+       , 0x0000                -- some padding for the hell of it; we can make the above more compact later too, if we want forward compatibility.
        ] >>= bytes64
    in assert (length bs == sIZEOF_METADATA) $
        bs
@@ -662,12 +622,7 @@ deserialize key (PS fp@(ForeignPtr _ arrWrapped) off len) = do
     deserializeByteArray key arr
 
 
-
--- TODO expose as internal function, for no copy? Is that even useful? users could use 'hPutBuf' to send bytes over the wire or write to a file.
---      then maybe also factor out and export unsafeSerializeByteArray
---        it would be helpful maybe to do a withMutableByteArray function which
---        gives a Ptr, and calls `touch` on the (unboxed!) mutablebytearray
---        afterwards.
+-- | A low-level deserialization routine. This is very fast, and does no copying.
 deserializeByteArray :: forall a. StableHashable a=> SipKey -> P.MutableByteArray RealWorld -> IO (BloomFilter a)
 deserializeByteArray key arr = do
   let len = P.sizeofMutableByteArray arr
@@ -689,10 +644,10 @@ deserializeByteArray key arr = do
             blDirty :: BloomFilter a
             blDirty = BloomFilter{..} -- defined here so we can use as proxy for param below.
 
-        let check b = unless b . throwIO . BloomFilterParamException 
+        let check b = unless b . throwBloom
 
-        check (version == vERSION) $ 
-          if version > vERSION
+        check (version == sERIALIZATION_VERSION) $ 
+          if version > sERIALIZATION_VERSION
             then "This bloomfilter was serialized with a new version of unagi-bloomfilter than the one in use."
             else "This bloomfilter was serialized with an older and incompatible version of unagi-bloomfilter than the one in use."
             -- This for now but we will offer forward compatibility, if possible, should serialization ever need to change.

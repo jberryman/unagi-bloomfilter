@@ -11,6 +11,7 @@ import Data.Primitive.MachDeps
 import Data.Bits
 import qualified Data.ByteString as B
 import Control.Monad
+import Control.Concurrent
 import Data.Word
 import Control.Exception
 import Text.Printf
@@ -26,6 +27,10 @@ main = do
 #  else
     putStrLn "!!! WARNING !!!: assertions not turned on in library code. configure with -finstrumented (first a `cabal clean` may be necessary) if you want to run tests with assertions enabled (it's good to test with both)"
 #  endif
+    procs <- getNumCapabilities
+    if procs < 2 
+        then putStrLn "!!! WARNING !!!: Some tests are only effective if more than 1 core is available"
+        else return ()
 
     -- test helper sanity: --------
     unless ((fromBits64 $ replicate 64 '1') == (maxBound :: Word64) &&
@@ -71,6 +76,7 @@ main = do
     createInsertFprTests
     smallBloomTest
     insertSaturateTest
+    insertConcurrentTest
     highFprTest
 
     expectedExceptionsTest
@@ -87,8 +93,8 @@ main = do
 -- Test exceptions that should only be possible to raise in untyped interface:
 expectedExceptionsTest :: IO ()
 expectedExceptionsTest = do
-    let assertRaises io = catch (io >> error "Expected BloomFilterParamException to be raised.")
-           (\e -> (e :: BloomFilterParamException) `seq` return ())
+    let assertRaises io = catch (io >> error "Expected BloomFilterException to be raised.")
+           (\e -> (e :: BloomFilterException) `seq` return ())
         nw :: Int -> Int -> IO (Bloom.BloomFilter Int)
         nw = Bloom.new (SipKey 1 1)
     -- `k` not > 0
@@ -117,6 +123,27 @@ insertSaturateTest = do
       when (fill < (wordSizeInBits - 10)) $
         error $ "Bloomfilter doesn't look like it was saturated like we expected "
                 ++(show fill)++"  "++(show randKey)
+
+
+insertConcurrentTest :: IO ()
+insertConcurrentTest = do
+  let k = 6
+  forM_ [0..12] $ \log2l-> do
+    let key = SipKey 23452345 (fromIntegral log2l)
+    b <- Bloom.new key k log2l
+    let szDataBytes = sIZEOF_INT * (floor ((2::Float)^log2l))
+    let (payload0,payload1) = splitAt szDataBytes [1..(szDataBytes * 2)]
+    done0 <- newEmptyMVar
+    done1 <- newEmptyMVar
+    void $ forkIO ((forM_ payload0 $ Bloom.insert b) >> putMVar done0 ())
+    void $ forkIO ((forM_ payload1 $ Bloom.insert b) >> putMVar done1 ())
+    takeMVar done0 >> takeMVar done1
+
+    control <- Bloom.new key k log2l
+    forM_ (payload0++payload1) $ Bloom.insert control
+
+    equalBloom b control
+
 
 
 -- Smoke test for very small bloom filters:
