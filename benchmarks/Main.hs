@@ -45,6 +45,7 @@ main = do
 
         -- TODO random lookups/inserts
 
+        -- TODO compare against time for 'new' can we factor this out automatically using env or whatever it's called?
         , bench "unionInto (14 -> 14)" $ whnfIO $ unionBench 14 14
         , bench "unionInto (20 -> 14)" $ whnfIO $ unionBench 20 14 -- 20 is 6x
         , bench "unionInto (20 -> 20)" $ whnfIO $ unionBench 20 20

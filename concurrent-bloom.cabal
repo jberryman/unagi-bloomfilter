@@ -7,8 +7,7 @@ description:
   .
   A bloom filter is a probabilistic, constant-space, set-like data structure
   supporting insertion and membership queries. This implementation is backed by
-  SipHash so can safely consume untrusted inputs, and exposes both a more
-  type-safe API and a more flexible low-level API.
+  SipHash so can safely consume untrusted inputs.
   .
   TODO benchmark comparison image
 
@@ -53,6 +52,7 @@ library
   build-depends:       base >=4.7 && <4.9
                      , atomic-primops >= 0.8
                      , primitive
+                     , bytestring
                      , hashabler >= 1.1
   hs-source-dirs:      src
   default-language:    Haskell2010
@@ -65,7 +65,7 @@ test-suite tests
   main-is:             Main.hs
   -- other-modules:
 
-  ghc-options:         -Wall -O2 -threaded -funbox-strict-fields -fno-ignore-asserts
+  ghc-options:         -Wall -O2 -threaded -funbox-strict-fields -fno-ignore-asserts "-with-rtsopts=-N"
   if flag(instrumented)
       ghc-prof-options:  "-with-rtsopts=-xc" -fprof-auto -fprof-auto-calls
 
@@ -78,6 +78,7 @@ test-suite tests
                          , random
                          , unagi-bloomfilter
                          , primitive
+                         , bytestring
                          , hashabler
   else 
       buildable: False

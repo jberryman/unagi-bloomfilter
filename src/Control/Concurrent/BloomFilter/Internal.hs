@@ -1,15 +1,25 @@
-{-# LANGUAGE BangPatterns, RecordWildCards, CPP #-}
+{-# LANGUAGE BangPatterns, RecordWildCards, CPP, ScopedTypeVariables #-}
 module Control.Concurrent.BloomFilter.Internal (
--- TODO we might just move this to 'Internal' at the top level, since we'll export functions here for both mutable and immutable apis.
+{- | Some additional unsafe, low-level, and internal functions are exposed here
+   for advanced users. The API should remain stable, except that functions may
+   be added and no promises are made about the internals of the 'BloomFilter'
+   type itself.
+ -}
       new
     , BloomFilter(..)
-    , BloomFilterParamException(..)
+    , BloomFilterException(..)
     , insert
     , lookup
     , unionInto
     , intersectionInto
+    , clone
     , SipKey(..)
     , fpr
+
+    , serialize
+    , unsafeSerialize
+    , deserialize
+    , deserializeByteArray
 
 # ifdef EXPORT_INTERNALS
   -- * Internal functions exposed for testing; you shouldn't see these
@@ -19,7 +29,9 @@ module Control.Concurrent.BloomFilter.Internal (
     , wordSizeInBits
     , uncheckedSetBit
     , isHash64Enough
+    , log2lFromArraySize
     , assertionCanary
+    , bytes64, unbytes64
 # endif
     )
     where
@@ -28,43 +40,31 @@ module Control.Concurrent.BloomFilter.Internal (
 import Data.Bits hiding (unsafeShiftL, unsafeShiftR)
 import qualified Data.Bits as BitsHidden
 import qualified Data.Primitive.ByteArray as P
+import Data.ByteString.Internal
+import GHC.ForeignPtr
+import Foreign.ForeignPtr
+import Foreign.Storable(peekElemOff)
 import Data.Primitive.MachDeps
+import Data.Primitive.Types(Addr(..))
 import Control.Monad.Primitive(RealWorld)
 import Data.Atomics
 import Data.Hashabler
 import Control.Exception
 import Data.Typeable(Typeable)
 import Control.Monad
-import Data.Word(Word64)
+import Data.Word(Word64, Word8)
 import Prelude hiding (lookup)
 
--- Operations:
---   - serialize/deserialize
---     - don't store the secret key, but 128 bit hash it with itself and store the first Word64
---     - store architecture and insist they match (since everything is relative to word size)
---     - store TypeHash value
---     - store a version number:
---       - this should correspond to the major version number of a breaking change
---       - include golden tests with serialized values, ensuring they match
---     - store all params passed to new.
---   - lossless union of two bloom filters (Monoid?)
---     - probably just implement for pure/frozen filters for now (doing an atomic op on every word of a filter is probably bad new bears).
---     - note also we can union any two bloom filters (as long as they're power of two size);
---       we simply fold the larger in on itself until it matches the smaller
---       SO DO WE CARE ABOUT HAVING THE LENGTH AT THE TYPE LEVEL?
---       (MAYBE: we still want that for `new` to ensure sufficient hash bits
---               But we only need a typelevel nat arg right? Not a tag.
---               The downside is just that we can't have a type-checked union,
---               which is probably not a big deal.
---               BUT: is this a proper Monoid when it's "lossy"?
---       (After thought): this perhaps can only easily be a semi-group, since we can't insert into empty
---                        so implement an operation `union` which we can make Semigroup.<> when it lands in base. (then deprecate `union` where we can offer a Semigroup instance)
---
---   - lossy intersection of two bloom filters (FPR becomes at most the FPR of one of constituents, but may be more than if single were created from scratch)
---     - again this doesn't require type-level length tag; we can union fold one filter down to match the other.
---   - freeze/thaw
---     - maybe freeze should return exposed constructor type (exposing immutable array)
---   x approximating number of items, and size of union and intersection
+-- Future operations:
+--   - memory-mapped bloomfilter for durability (which of ACID do we get?). See 'vector-mmap' package?
+--     - allow opening mmap-ed file directly from serialized form?
+--   - approximating number of items, and size of union and intersection
+--   - freezing/pure/ST interface (e.g. Data.BloomFilter)
+--     - API: 
+--         - only allow writes in ST (copying for each write is awful)
+--         - provide a fromList that uses ST, for convenience
+--         - querying and combining can be regural pure interface (Semigroup)
+--          
 --   - bulk reads and writes, for performance: (especially good for pure interface fromList, etc.
 --      fromList implementation possibilities:
 --        1 - allocate new
@@ -83,21 +83,22 @@ import Prelude hiding (lookup)
 --     - possible linearizability issues.
 --     - other operations become tricker or not doable.
 --
--- Things that can happen later:
---   - freezing/pure interface
 --
---
---
--- Typed interface:
---   - parameterize by length, or at least have Bloom64 Bloom128
---      - new takes a type-level nat regardless
+-- Future typed interface:
+--   - parameterize by length, or at least have separate Bloom64 (faster, uses only 64-bit hashes) and Bloom128 functions.
+--      - new takes a type-level nat regardless of whether we carry that around in a parameter
 --   - parameterize by k (no big deal being static)
---   - for sipkey: use NullaryTypeClasses or some more clever solution
+--   - for sipkey: 
+--       - use NullaryTypeClasses or some more clever solution
 --         "The conﬁgurations problem is to propagate run-time preferences
 --         throughout a program, allowing multiple concurrent conﬁguration sets
 --         to coexist safely under statically guaranteed separation..."
 --         TODO is this relevant for the other type-level params we imagine?
 --         TODO can the two be complimentary?: use a singleton class, but instantiate it dynamically with reflection? per:https://www.schoolofhaskell.com/user/thoughtpolice/using-reflection#dynamically-constructing-type-class-instances
+--       - Or use a type lit that corresponds to an environment variable, and tag
+--         - the user could shoot himself in the foot by changing the environment and break this scheme
+--            but that's probably okay.
+--         - what if user wants to pass it as a command line arg or something? Is this equally compatible with windows?
 --
 --   - `new` variant that ensures fast 64-bit version.
 --   - deserializing, will have type ... -> Either String (BloomFilter x y z a)
@@ -126,29 +127,28 @@ data BloomFilter a = BloomFilter { key :: !SipKey
                                  }
 
 
-
--- | Exceptions raised because of invalid parameters passed to 'new' or other
--- invalid internal states from making about with BloomFilter internals. These
--- should never be raised when using our Typed interface.
-newtype BloomFilterParamException = BloomFilterParamException String
+-- | Exceptions that may be thrown by operations in this library.
+newtype BloomFilterException = BloomFilterException String
     deriving (Show, Typeable)
 
-instance Exception BloomFilterParamException
+instance Exception BloomFilterException
 
+throwBloom :: String -> IO a
+throwBloom = throwIO . BloomFilterException
 
 -- | Create a new bloom filter of elements of type @a@ with the given hash key
 -- and parameters. 'fpr' can be useful for calculating the @k@ parameter, or
 -- determining a good filter size.
 --
 -- The parameters must satisfy the following conditions, otherwise a
--- 'BloomFilterParamException' will be thrown:
+-- 'BloomFilterException' will be thrown:
 --
 --   - @k > 0@
 --   - @log2l >= 0 && log2l <= wordSizeInBits@
 --   - @log2l + k*(logBase 2 wordSizeInBits) <= 128@
 --
 -- In addition, performance on 64-bit machines will be best when
--- @log2l + k*(logBase 2 wordSizeInBits) <= 128@ where we require only 64 hash
+-- @log2l + k*(logBase 2 wordSizeInBits) <= 64@ where we require only 64 hash
 -- bits for each element. (Performance on 32-bit machines will be worse in all
 -- cases, as we're doing 64-bit arithmetic.)
 --
@@ -169,22 +169,46 @@ new :: SipKey
 new key k log2l = do
     -- In typed interface all of these conditions hold:
     let !hash64Enough = isHash64Enough log2l k
-    unless (k > 0) $
-      throwIO $ BloomFilterParamException "in 'new', k must be > 0"
-    unless (log2l >= 0) $
-      throwIO $ BloomFilterParamException "in 'new', log2l must be >= 0"
+    checkParamInvariants k log2l
 
-    (arr, sizeBytes) <- newBloomArr log2l
-    P.fillByteArray arr 0 sizeBytes (0x00)
+    (arr, sizeDataBytes) <- newBloomArr log2l
+    P.fillByteArray arr 0 sizeDataBytes (0x00)
 
     return $ BloomFilter { l_minus1 = (2^log2l)-1, .. }
 
+-- factored out for deserialization:
+checkParamInvariants :: Int -> Int -> IO ()
+checkParamInvariants k log2l = do
+    unless (k > 0) $
+      throwBloom "in 'new', k must be > 0"
+    unless (log2l >= 0) $
+      throwBloom "in 'new', log2l must be >= 0"
+
+-- We leave a buffer at the end of the data portion of the filter large enough
+-- to store metadata for serialization, so we don't have to do any copying for
+-- ser/deser. But we don't concern ourselves with populating or maintaining
+-- metadata except during our serialization and deserialization routines; that
+-- memory may be dirty.
 newBloomArr :: Int -> IO (P.MutableByteArray RealWorld, Int)
 newBloomArr log2l = do
-    let !sizeBytes = sIZEOF_INT `uncheckedShiftL` log2l
+    let !sizeDataBytes = sIZEOF_INT `uncheckedShiftL` log2l
     -- aligned: we assume atomic reads (no word tearing):
-    arr <- P.newAlignedPinnedByteArray sizeBytes aLIGNMENT_INT
-    return (arr,sizeBytes)
+    -- pinned: for performance, and so we can "serialize" to bytestring without
+    --         copying, and do other future FFI stuff
+    arr <- P.newAlignedPinnedByteArray (sizeDataBytes+sIZEOF_METADATA) aLIGNMENT_INT
+    return (arr,sizeDataBytes)
+
+log2lFromArraySize :: Int{-bytes-} -> IO Int
+log2lFromArraySize sz = 
+  either throwBloom return $ do
+    let dataSzBytes = sz - sIZEOF_METADATA
+        log2lFloat = logBase 2 ((fromIntegral dataSzBytes / fromIntegral sIZEOF_INT) :: Float)
+        log2l = floor log2lFloat
+    unless (dataSzBytes >= sIZEOF_INT) $ Left "Array is not large enough to be a serialized bloom filter"
+    unless (fromIntegral log2l == log2lFloat) $ Left "Array is an unexpected size for a serialized bloom filter"
+    return log2l
+  
+
 
 membershipWordAndBits64 :: Hash64 a -> BloomFilter a -> (Int, Int)
 {-# INLINE membershipWordAndBits64 #-}
@@ -255,9 +279,9 @@ isHash64Enough :: Int -> Int -> Bool
 isHash64Enough log2l k =
     let bitsReqd = log2l + k*log2w
      in if bitsReqd > 128
-          then throw $ BloomFilterParamException "The passed parameters require over the maximum of 128 hash bits supported. Make sure: (log2l + k*(logBase 2 wordSizeInBits)) <= 128"
+          then throw $ BloomFilterException "The passed parameters require over the maximum of 128 hash bits supported. Make sure: (log2l + k*(logBase 2 wordSizeInBits)) <= 128"
           else if (log2l > wordSizeInBits)
-                 then throw $ BloomFilterParamException "You asked for (log2l > 64). We have no way to address memory in that range, and anyway that's way too big."
+                 then throw $ BloomFilterException "You asked for (log2l > 64). We have no way to address memory in that range, and anyway that's way too big."
                  else bitsReqd <= 64
 
 maskLog2wRightmostBits :: Int -- 2^log2w - 1
@@ -329,10 +353,9 @@ lookup bloom@(BloomFilter{..}) = \a-> do
 -- inserted into the target originally.
 --
 -- The source and target must have been created with the same key and
--- @k@-value. In addition the target must not be larger (the @l@-value) than
--- the source, /and/ they must both [use 128/64 bit hashes TODO link to helper
--- function]. This throws a 'BloomFilterParamException' when those constraints
--- are not met.
+-- @k@-value. In addition the target must not be larger (i.e. the @l@-value)
+-- than the source, /and/ they must both use 128/64 bit hashes. This throws a
+-- 'BloomFilterException' when those constraints are not met.
 --
 -- This operation is not linearizable with respect to 'insert'-type operations;
 -- elements being written to the source bloomfilter during this operation may
@@ -346,7 +369,7 @@ unionInto = combine fetchOrIntArray
 
 -- | /O(l_src+l_target)/. Make @target@ the intersection of the source and
 -- target sets.  This operation is "lossy" in that the false positive ratio of
--- target after the operation will be higher than if the elements forming the
+-- target after the operation may be higher than if the elements forming the
 -- intersection had been 'insert'-ed directly into target.
 --
 -- The constraints and comments re. linearizability in 'unionInto' also apply
@@ -362,13 +385,13 @@ combine :: (P.MutableByteArray RealWorld -> Int -> Int -> IO x)
         -> BloomFilter a -> BloomFilter a -> IO ()
 {-# INLINE combine #-}
 combine f = \src target -> do
-    unless (key src == key target) $ throwIO $ BloomFilterParamException $
+    unless (key src == key target) $ throwBloom $
       "SipKey of the source BloomFilter does not match target"
-    unless (k src == k target) $ throwIO $ BloomFilterParamException $
+    unless (k src == k target) $ throwBloom $
       "k of the source BloomFilter does not match target"
-    unless (log2l src >= log2l target) $ throwIO $ BloomFilterParamException $
+    unless (log2l src >= log2l target) $ throwBloom $
       "log2l of the source BloomFilter is smaller than the target"
-    unless (hash64Enough src == hash64Enough target) $ throwIO $ BloomFilterParamException $
+    unless (hash64Enough src == hash64Enough target) $ throwBloom $
       "either the source or target BloomFilter requires 128 hash bits while the other requires 64"
 
     let target_l_minus1 = fromIntegral $ l_minus1 target
@@ -382,10 +405,10 @@ combine f = \src target -> do
       if target_l_minus1 == src_l_minus1
         then return (arr src)
         else assert (target_l_minus1 < src_l_minus1) $ do
-          (srcArrShrunk, sizeBytes) <- newBloomArr $ log2l target
+          (srcArrShrunk, sizeDataBytes) <- newBloomArr $ log2l target
           -- initialize new array with an efficient copy of first chunk from
           -- source:
-          P.copyMutableByteArray srcArrShrunk 0 (arr src) 0 sizeBytes
+          P.copyMutableByteArray srcArrShrunk 0 (arr src) 0 sizeDataBytes
 
           forM_ [(target_l_minus1+1).. src_l_minus1] $ \srcWordIx -> do
             let !targetWordIx = srcWordIx .&. target_l_minus1
@@ -400,6 +423,18 @@ combine f = \src target -> do
     forM_ [0.. target_l_minus1] $ \ix -> do
       srcWord <- P.readByteArray srcArrShrunk ix
       f (arr target) ix srcWord
+
+-- | Create a copy of the input @BloomFilter@.
+--
+-- This operation is not linearizable with respect to 'insert'-type operations;
+-- elements being written to the source bloomfilter during this operation may
+-- or may not make it into the target "at random".
+clone :: BloomFilter a -> IO (BloomFilter a)
+clone BloomFilter{..} = do
+    (arrCopy, sizeDataBytes) <- newBloomArr log2l
+    P.copyMutableByteArray arrCopy 0 arr 0 sizeDataBytes
+    return $ 
+      BloomFilter { arr = arrCopy, .. }
 
 
 nonatomicFetchOrIntArray :: P.MutableByteArray RealWorld -> Int -> Int -> IO Int
@@ -489,6 +524,184 @@ fpr nI lI kI wI =
 
 
 
+-- ------------------------------------------------------------------
+-- Serialization
+-- ------------------------------------------------------------------
+
+
+-- For now we just prepare to throw an error if the 
+sIZEOF_METADATA, mETADATA_WORDS :: Int
+sIZEOF_METADATA = 8*mETADATA_WORDS
+mETADATA_WORDS = 8
+
+sERIALIZATION_VERSION :: Word64
+sERIALIZATION_VERSION = 0
+  
+
+-- Return metadata for serialization from the ADT
+metadataBytes :: StableHashable a=> BloomFilter a -> [Word8]
+metadataBytes bl@BloomFilter{..} = 
+  let keyHash = hashSipKey key
+      bs = 
+       [ sERIALIZATION_VERSION -- serialization format version
+       , tpHashOf bl           -- for verifying we deserialize to the correct element type
+       , hashWord64 keyHash    -- for verifying key (we don't wish to store it)
+       , tpHashOf keyHash      -- ensures sanity of the hashing of our key
+       , fromIntegral wordSizeInBits
+       , fromIntegral k 
+       , fromIntegral log2l 
+       , 0x0000                -- some padding for the hell of it; we can make the above more compact later too, if we want forward compatibility.
+       ] >>= bytes64
+   in assert (length bs == sIZEOF_METADATA) $
+       bs
+
+-- A client may be concerned about keeping her SipKey secret; we have two decent options: 
+--   1. store the key in the serialized bloom filter, and force the user to use encryption
+--   2. make the user handle managing keys, and store a hash of the key to
+--      ensure sanity when the user provides the key again for deserialization
+-- We've chosen (2), mostly because if we omit the key the filter is completely
+-- opaque and secure, and we wish to experiment with mmap which a user of
+-- encryption couldn't use if they wanted to make sure their key never landed
+-- on disk.
+--
+-- We hash the key with itself and presume (read "hope") that this doesn't leak
+-- any information about the key:
+hashSipKey :: SipKey -> Hash64 (Word64, Word64)
+hashSipKey k@(SipKey w0 w1) = siphash64 k (w0, w1)
+
+populateMetadata :: StableHashable a=> BloomFilter a -> IO ()
+populateMetadata b@BloomFilter{..} = do
+    let !sizeDataBytes = sIZEOF_INT `uncheckedShiftL` log2l
+    assert (P.sizeofMutableByteArray arr == sizeDataBytes + sIZEOF_METADATA) $ return ()
+    forM_ (zip [sizeDataBytes..] $ metadataBytes b) $ 
+        uncurry (P.writeByteArray arr)
+
+-- | Serialize a bloom filter to a strict @ByteString@, which can be
+-- 'deserialize'-ed once again. Only a hash of the 'SipKey' is stored in the
+-- serialized format.
+--
+-- This operation is not linearizable with respect to 'insert'-type operations;
+-- elements being written to the source bloomfilter during this operation may
+-- or may not make it into the serialized @ByteString@ "at random".
+serialize :: StableHashable a=> BloomFilter a -> IO ByteString
+serialize bl = clone bl >>= unsafeSerialize
+
+-- | Serialize a bloom filter to a strict @ByteString@, which can be
+-- 'deserialize'-ed once again. Only a hash of the 'SipKey' is stored in the
+-- serialized format. This operation is very fast and does no copying.
+--
+-- This is unsafe in that the source @BloomFilter@ must not be modified after
+-- this operation, otherwise the ByteString will change, breaking referential
+-- transparency. Use 'serialize' if uncertain.
+unsafeSerialize :: StableHashable a=> BloomFilter a -> IO ByteString
+unsafeSerialize b@BloomFilter{..} = do
+    populateMetadata b
+    let addr = (\(Addr x)-> x) $ P.mutableByteArrayContents arr
+        arr' = (\(P.MutableByteArray x) -> x) arr
+    return $ 
+      PS (ForeignPtr addr (PlainPtr arr')) 0 (P.sizeofMutableByteArray arr)
+
+-- | Deserialize a 'BloomFilter' from a @ByteString@ created with 'serialize'
+-- or 'unsafeSerialize'. The key that was used to create the bloom filter is
+-- not stored for security, and must be provided here. However if the key
+-- provided does not match the key it was originally created with, a
+-- 'BloomFilterException' will be thrown.
+deserialize :: StableHashable a=> SipKey -> ByteString -> IO (BloomFilter a)
+deserialize key (PS fp@(ForeignPtr _ arrWrapped) off len) = do
+    log2l <- log2lFromArraySize len
+    -- It would be possible to create an 'unsafeDeserialize' which could
+    -- deserialize without this extra copy, where 'off' and 'len' are unused
+    -- (i.e. we can use the MutableByteArray directly), however we still have
+    -- the issue of finalizers; I think we would need to keep the ForeignPtr
+    -- around and make sure to touch it. However we can still offer our own IO
+    -- functions (e.g. an mmap routine) that does no extra copying.
+    (arr, _) <- newBloomArr log2l
+
+    -- Copy ByteString data to a fresh MutableByteArray:
+    case arrWrapped of
+        PlainPtr  arrDirty   -> P.copyMutableByteArray arr 0 (P.MutableByteArray arrDirty) off len
+        MallocPtr arrDirty _ -> P.copyMutableByteArray arr 0 (P.MutableByteArray arrDirty) off len
+        -- If we don't have access to the MutableByteArray we do a slow
+        -- byte-at-a-time copy:
+        _ -> withForeignPtr fp $ \ptr->
+               forM_ (zip (take len [off..]) [0..]) $ \(ptrBytOff,targetBytIx)->
+                 peekElemOff ptr ptrBytOff >>= P.writeByteArray arr targetBytIx
+
+    touchForeignPtr fp
+    deserializeByteArray key arr
+
+
+-- | A low-level deserialization routine. This is very fast, and does no copying.
+deserializeByteArray :: forall a. StableHashable a=> SipKey -> P.MutableByteArray RealWorld -> IO (BloomFilter a)
+deserializeByteArray key arr = do
+  let len = P.sizeofMutableByteArray arr
+  log2lActual <- log2lFromArraySize len
+  let metadataBytesIx = sIZEOF_INT `uncheckedShiftL` log2lActual
+  assert (metadataBytesIx + sIZEOF_METADATA == len) $ return ()
+  -- read bytes-at-a-time (endianness) and reconstruct metadata:
+  byts <- forM (take sIZEOF_METADATA [metadataBytesIx..]) $ P.readByteArray arr
+  let go [] = []
+      go (b0:b1:b2:b3:b4:b5:b6:b7:bs) = unbytes64 [b0,b1,b2,b3,b4,b5,b6,b7] : go bs
+      go _ = error "Bug: somehow sIZEOF_METADATA could not be chunked evenly into Word64s"
+  case go byts of
+    m@[version,tpHashBlParam,keyHash,tpHashKeyHash,wdSzBits,k64,log2l64,_pad] -> 
+      assert (length m == mETADATA_WORDS) $ do
+        let log2l = fromIntegral log2l64 
+            k = fromIntegral k64
+            hash64Enough = isHash64Enough log2l k
+            l_minus1 = (2^log2l)-1
+            blDirty :: BloomFilter a
+            blDirty = BloomFilter{..} -- defined here so we can use as proxy for param below.
+
+        let check b = unless b . throwBloom
+
+        check (version == sERIALIZATION_VERSION) $ 
+          if version > sERIALIZATION_VERSION
+            then "This bloomfilter was serialized with a new version of unagi-bloomfilter than the one in use."
+            else "This bloomfilter was serialized with an older and incompatible version of unagi-bloomfilter than the one in use."
+            -- This for now but we will offer forward compatibility, if possible, should serialization ever need to change.
+        check (tpHashBlParam == tpHashOf blDirty)
+          "This serialized bloom filter contained elements of a different type than you were expecting, or was created with an incompatible Hashable instance. See StableHashable."
+        let keyHashExpected = hashSipKey key
+            tpHashKeyHashExpected = tpHashOf keyHashExpected
+        check (tpHashKeyHashExpected == tpHashKeyHash) 
+          "Could not validate key. This serialized bloom filter was created with an incompatible Hashable instance. See StableHashable."
+        check (keyHash == hashWord64 keyHashExpected)
+          "The supplied key does not match the key that was used to create the serialized bloom filter."
+        check (fromIntegral wdSzBits == wordSizeInBits) $ 
+          "Serialized bloom filters are not currently cross-architecture compatible. Word size in bits when the filter was created was "++(show wdSzBits)++", but on the local machine is "++(show wordSizeInBits)
+        check (fromIntegral k == k64 && fromIntegral log2l == log2l64) $
+          "k or log2l could not fit in Int. This indicates corruption, or a bug: "++(show (k,k64,log2l,log2l64))
+        checkParamInvariants k log2l
+
+        return blDirty
+        
+    _ -> error "Bug: somehow we returned the wrong number of metadata words"
+      
+
+  
+tpHashOf :: StableHashable a => proxy a -> Word64
+tpHashOf = typeHashWord . typeHashOfProxy
+
+bytes64 :: Word64 -> [Word8]
+{-# INLINE bytes64 #-}
+bytes64 wd = [ shifted 56, shifted 48, shifted 40, shifted 32
+             , shifted 24, shifted 16, shifted 8, fromIntegral wd]
+     where shifted = fromIntegral . uncheckedShiftR wd
+
+unbytes64 :: [Word8] -> Word64
+{-# INLINE unbytes64 #-}
+unbytes64 [b0,b1,b2,b3,b4,b5,b6,b7] = 
+    unshifted b0 56 .|.  unshifted b1 48 .|.  unshifted b2 40 .|.  unshifted b3 32  .|.
+    unshifted b4 24 .|.  unshifted b5 16 .|.  unshifted b6 8 .|.  fromIntegral b7
+   where unshifted = uncheckedShiftL . fromIntegral
+unbytes64 _ = error "unbytes64"
+    
+
+
+-- ------------------------------------------------------------------
+-- Etc.
+-- ------------------------------------------------------------------
 
 
 # ifdef EXPORT_INTERNALS

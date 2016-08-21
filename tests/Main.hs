@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, BangPatterns #-}
+{-# LANGUAGE CPP, BangPatterns, RecordWildCards, NamedFieldPuns #-}
 module Main (main) where
 
 import Control.Concurrent.BloomFilter.Internal
@@ -7,9 +7,12 @@ import Data.Hashabler
 
 import Test.QuickCheck hiding ((.&.))
 import Data.Primitive.ByteArray
+import Data.Primitive.MachDeps
 import Data.Bits
+import qualified Data.ByteString as B
 import Control.Monad
-import Data.Word(Word64)
+import Control.Concurrent
+import Data.Word
 import Control.Exception
 import Text.Printf
 import Data.List
@@ -22,8 +25,12 @@ main = do
 #  ifdef ASSERTIONS_ON
     checkAssertionsOn
 #  else
-    putStrLn "!!! WARNING !!!: assertions not turned on in library code. configure with -finstrumented if you want to run tests with assertions enabled (it's good to test with both)"
+    putStrLn "!!! WARNING !!!: assertions not turned on in library code. configure with -finstrumented (first a `cabal clean` may be necessary) if you want to run tests with assertions enabled (it's good to test with both)"
 #  endif
+    procs <- getNumCapabilities
+    if procs < 2 
+        then putStrLn "!!! WARNING !!!: Some tests are only effective if more than 1 core is available"
+        else return ()
 
     -- test helper sanity: --------
     unless ((fromBits64 $ replicate 64 '1') == (maxBound :: Word64) &&
@@ -69,6 +76,7 @@ main = do
     createInsertFprTests
     smallBloomTest
     insertSaturateTest
+    insertConcurrentTest
     highFprTest
 
     expectedExceptionsTest
@@ -77,14 +85,16 @@ main = do
     unionSmokeTest
     unionTests
     intersectionTests
+    
+    serializationTests
 
     putStrLn "TESTS PASSED"
 
 -- Test exceptions that should only be possible to raise in untyped interface:
 expectedExceptionsTest :: IO ()
 expectedExceptionsTest = do
-    let assertRaises io = catch (io >> error "Expected BloomFilterParamException to be raised.")
-           (\e -> (e :: BloomFilterParamException) `seq` return ())
+    let assertRaises io = catch (io >> error "Expected BloomFilterException to be raised.")
+           (\e -> (e :: BloomFilterException) `seq` return ())
         nw :: Int -> Int -> IO (Bloom.BloomFilter Int)
         nw = Bloom.new (SipKey 1 1)
     -- `k` not > 0
@@ -113,6 +123,27 @@ insertSaturateTest = do
       when (fill < (wordSizeInBits - 10)) $
         error $ "Bloomfilter doesn't look like it was saturated like we expected "
                 ++(show fill)++"  "++(show randKey)
+
+
+insertConcurrentTest :: IO ()
+insertConcurrentTest = do
+  let k = 6
+  forM_ [0..12] $ \log2l-> do
+    let key = SipKey 23452345 (fromIntegral log2l)
+    b <- Bloom.new key k log2l
+    let szDataBytes = sIZEOF_INT * (floor ((2::Float)^log2l))
+    let (payload0,payload1) = splitAt szDataBytes [1..(szDataBytes * 2)]
+    done0 <- newEmptyMVar
+    done1 <- newEmptyMVar
+    void $ forkIO ((forM_ payload0 $ Bloom.insert b) >> putMVar done0 ())
+    void $ forkIO ((forM_ payload1 $ Bloom.insert b) >> putMVar done1 ())
+    takeMVar done0 >> takeMVar done1
+
+    control <- Bloom.new key k log2l
+    forM_ (payload0++payload1) $ Bloom.insert control
+
+    equalBloom b control
+
 
 
 -- Smoke test for very small bloom filters:
@@ -358,6 +389,111 @@ intersectionTests =
       exsts <- Bloom.lookup b2 v
       unless exsts $ error $ (show (bigl,littlel,v))++": Could not find expected element."
 
+serializationTests :: IO ()
+serializationTests = do
+  quickCheckErr 1000 $ \(Large wd64)->
+    wd64 == (unbytes64 . bytes64 $ wd64)
+  equalBloomSane
+  -- test log2lFromArraySize:
+  forM_ [(1,0), (2,1), (3,2), (4,8), (5, 12)] $ \args-> do
+    BloomFilter{..} <- uncurry (Bloom.new (SipKey 848 734783)) args
+    log2lCalc <- log2lFromArraySize (sizeofMutableByteArray arr)
+    unless (log2l == log2lCalc) $ 
+      error $ "log2lFromArraySize mismatch: "++(show (args,log2l,log2lCalc))
+
+  serializeRoundtripsTest
+  serializeGoldenTests
+
+-- For validating that we can serialize and deserialize across machines, and
+-- try to handle forwards compatibility (later).
+serializeGoldenTests :: IO ()
+serializeGoldenTests = do
+  if sIZEOF_INT == 8
+    then 
+      forM_ [(1,0), (2,1), (3,2), (3,7), (4, 10)] $ \(k, log2l)-> do
+        let key = SipKey 983745 476835
+        b <- Bloom.new key k log2l
+        let szDataBytes = sIZEOF_INT * (floor ((2::Float)^log2l))
+        payload <- forM [1..(szDataBytes * 2)] $ \x-> do
+          void $ Bloom.insert b x
+          return x
+
+        let path = "tests/serialized/"++(show k)++"_"++(show log2l)++".64.bytestring"
+        bSerNow <- unsafeSerialize b
+        -- B.writeFile path bSerNow  -- UNCOMMENT TO REGENERATE:
+        bSerStored <- B.readFile path
+        unless (bSerNow == bSerStored) $ 
+          error $ "Deserialized stored bloom did not match: "++path
+
+        b' <- Bloom.deserialize key bSerStored
+        forM_ payload $ \x-> do
+          present <- Bloom.lookup b' x
+          unless present $ error $ "Did not find all expected elements in: "++path
+        
+    else 
+      -- TODO. Don't have a 32-bit machine to generate filters from.
+      return ()
+
+serializeRoundtripsTest :: IO ()
+serializeRoundtripsTest = do
+  let key = SipKey 87345 8723
+  forM_ [(1,0), (2,1), (3,2), (3,7), (3, 14)] $ \(k, log2l)-> do
+    b <- Bloom.new key k log2l
+    let szDataBytes = sIZEOF_INT * (floor ((2::Float)^log2l))
+    forM_ [1..(szDataBytes * 2)] $ \x-> do
+      void $ Bloom.insert b x
+
+    bSer <- Bloom.serialize b
+    bUnsafeSer <- unsafeSerialize b
+    unless (bSer == bUnsafeSer) $
+      error $ "Unsafe and safe serialize produced different bytestrings with"++(show (k,log2l))
+    b'  <- Bloom.deserialize key bSer
+    b'U <- Bloom.deserialize key bUnsafeSer
+    equalBloom b b'
+    equalBloom b b'U
+
+    -- Now mangle and unmangle the bytestring to excercise offset/length, etc.
+    -- in deserialization:
+    let (!dc,!ba) = B.splitAt 5 $ B.reverse bUnsafeSer
+        !bax = ba `B.snoc` 0xFF
+        !xabcd = B.reverse bax `B.append` B.reverse dc
+    let !bUnsafeSer' = B.drop 1 xabcd
+    unless (bUnsafeSer == bUnsafeSer') $ error "Didn't mangle/unmangle properly"
+    b'U' <- Bloom.deserialize key bUnsafeSer'
+    equalBloom b b'U'
+
+
+equalBloomSane :: IO ()
+equalBloomSane = do
+  let key = SipKey 99 100
+  forM_ [(1,0), (2,1), (3,2), (4,8), (5, 12)] $ \(k, log2l)-> do
+    b0 <- Bloom.new key k log2l
+    b1 <- Bloom.new key k log2l
+    b2 <- Bloom.new key k log2l
+    let szDataBytes = sIZEOF_INT * (floor ((2::Float)^log2l))
+    forM_ [1..(szDataBytes * 2)] $ \x-> do
+      void $ Bloom.insert b0 x
+      void $ Bloom.insert b1 x
+      void $ Bloom.insert b2 x
+    equalBloom b0 b1
+    -- modify in metadata region, and make sure equal:
+    writeByteArray (arr b0) szDataBytes (0xFF::Word8)
+    writeByteArray (arr b0) (sizeofMutableByteArray (arr b0) -1) (0xFF:: Word8)
+    equalBloom b0 b1
+
+    -- ensure we catch differences
+    writeByteArray (arr b0) (szDataBytes-1) (0xFF::Word8) -- last data byte
+    throws1 <- try (equalBloom b0 b1)
+    writeByteArray (arr b2) (szDataBytes-1) (0xFF::Word8) -- last data byte
+    equalBloom b0 b2
+    writeByteArray (arr b2) 0 (0xFF::Word8)      -- first data byte
+    throws2 <- try (equalBloom b0 b2)
+    case [throws1 :: Either SomeException (), throws2] of
+      [Left _, Left _] ->  return ()
+      es -> error $ "equalBloom didn't detect differences: "++(show es)
+
+  
+
 {-
  A NOTE ON TESTING FPR (from the paper)
 
@@ -515,3 +651,22 @@ quickCheckErr n p =
 
   where maybeErr (Success _ _ _) = return ()
         maybeErr e = error $ show e
+
+-- TODO eventually could replace this with an exported lib function (e.g. Eq on frozen BloomFilters)
+--      easiest might just be unsafeSerialize + Eq for ByteString
+equalBloom :: BloomFilter a -> BloomFilter a -> IO ()
+equalBloom b0 b1 = do
+  unless ((key b0, k b0, hash64Enough b0, l_minus1 b0, log2l b0) == (key b1, k b1, hash64Enough b1, l_minus1 b1, log2l b1)) $
+    error "Can't compare arrays, since params aren't the same"
+  let sz0 = sizeofMutableByteArray (arr b0)
+  unless (sz0 == (sizeofMutableByteArray $ arr b1)) $
+    error "Array sizes differ"
+
+  let dataWords = floor ((2::Float)^(log2l b0))
+  forM_ [0..(dataWords -1)] $ \wordIx -> do
+    w0 <- readByteArray (arr b0) wordIx 
+    w1 <- readByteArray (arr b1) wordIx 
+    unless ((w0 :: Word) == w1) $
+      error $ "Arrays differ at ix: "++(show wordIx)
+  
+
