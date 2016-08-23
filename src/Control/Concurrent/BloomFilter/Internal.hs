@@ -1,4 +1,4 @@
-{-# LANGUAGE BangPatterns, RecordWildCards, CPP, ScopedTypeVariables #-}
+{-# LANGUAGE BangPatterns, RecordWildCards, CPP, ScopedTypeVariables, DeriveDataTypeable #-}
 module Control.Concurrent.BloomFilter.Internal (
 {- | Some additional unsafe, low-level, and internal functions are exposed here
    for advanced users. The API should remain stable, except that functions may
