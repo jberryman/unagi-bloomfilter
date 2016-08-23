@@ -106,6 +106,9 @@ import Prelude hiding (lookup)
 
 
 
+-- TODO: expose functions that would allow users to shard inserts and lookups
+--       and use non-atomic write. e.g. maybe an unsafeInsert (non-threadsafe
+--       write) as well as functions that take a user-supplied hash directly. 
 
 
 

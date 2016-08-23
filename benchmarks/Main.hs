@@ -5,8 +5,9 @@ module Main where
 #  endif
 
 import Criterion.Main
-import Control.DeepSeq(deepseq)
+import Control.DeepSeq
 import Control.Monad
+import Control.Concurrent
 import qualified Data.Text as T
 
 import Control.Concurrent.BloomFilter.Internal
@@ -31,6 +32,12 @@ main = do
     when assertionsOn $
       putStrLn  $ "!!! WARNING !!! assertions are enabled in library code and may result in "
                 ++"slower than realistic benchmarks. Try configuring without -finstrumented"
+
+    procs <- getNumCapabilities
+    if procs < 2 
+        then putStrLn "!!! WARNING !!!: Some benchmarks are only valid if more than 1 core is available"
+        else return ()
+    
     b_5_20 <- Bloom.new (SipKey 1 1) 5 20
     b_13_20 <- Bloom.new (SipKey 1 1) 13 20 -- needs 128
 
@@ -51,6 +58,7 @@ main = do
                      in [s]:a:b:c:d:e:(go es)
 
     let textWords10k = map T.pack $ take 10000 fakeWords
+        (wds5k_0, wds5k_1) = splitAt 5000 textWords10k
     deepseq textWords10k $ return ()
 
     let hashset10 = HashSet.fromList $ take 10 textWords10k
@@ -67,7 +75,70 @@ main = do
           bench "membershipWordAndBits64" $ nf (membershipWordAndBits64 (Hash64 1)) b_5_20
         , bench "membershipWordAndBits128" $ nf (membershipWordAndBits128 (Hash128 1 1)) b_13_20
         ],
-      bgroup "lookup insert" [
+
+      -- For comparing cache behavior with perf, against below:
+      bgroup "HashSet" $
+        [ bench "10K insert" $ whnf (HashSet.fromList) textWords10k ],
+      bgroup "Set" $
+        [ bench "10K insert" $ whnf (Set.fromList) textWords10k ],
+
+      bgroup "different sizes" $
+        let benches b = [
+                bench "10K inserts" $ whnfIO $ manyInserts b textWords10k
+              , bench "10K lookups" $ whnfIO $ manyLookups b textWords10k
+              ]
+         in
+            [ env (Bloom.new (SipKey 11 22) 3 12) $ \ ~b -> 
+                bgroup "4096" (benches b)
+            , env (Bloom.new (SipKey 11 22) 3 14) $ \ ~b -> 
+                bgroup "16384" (benches b)
+            , env (Bloom.new (SipKey 11 22) 3 16) $ \ ~b -> 
+                bgroup "65536" (benches b)
+            , env (Bloom.new (SipKey 11 22) 3 20) $ \ ~b -> 
+                bgroup "1MB" (benches b)
+            , env (Bloom.new (SipKey 11 22) 3 24) $ \ ~b -> 
+                bgroup "8MB" (benches b)
+            , env (Bloom.new (SipKey 11 22) 3 27) $ \ ~b -> 
+                bgroup "64MB" (benches b)
+            ]
+      , bgroup "different sizes (concurrency)" $
+        {-
+          -- TODO factor out cost of 'new' in some better way:
+        [ env (Bloom.new (SipKey 11 22) 3 12) $ \ ~b -> 
+            bench "bigInsertLookup 15k ops" $  whnfIO (largeInsertQueryBench b wds5k_0 wds5k_1)
+
+        , env (Bloom.new (SipKey 11 22) 3 12) $ \ ~b -> 
+           bench "bigInsertLookup 15k ops across two threads (4096)" $ whnfIO (largeInsertQueryBenchTwoThreads b 5000 wds5k_0 wds5k_1)
+        , env (Bloom.new (SipKey 11 22) 3 14) $ \ ~b -> 
+           bench "bigInsertLookup 15k ops across two threads (16384)" $ whnfIO (largeInsertQueryBenchTwoThreads b 5000 wds5k_0 wds5k_1)
+        , env (Bloom.new (SipKey 11 22) 3 16) $ \ ~b -> 
+           bench "bigInsertLookup 15k ops across two threads (65536)" $ whnfIO (largeInsertQueryBenchTwoThreads b 5000 wds5k_0 wds5k_1)
+        , env (Bloom.new (SipKey 11 22) 3 20) $ \ ~b -> 
+           bench "bigInsertLookup 15k ops across two threads (1MB)" $ whnfIO (largeInsertQueryBenchTwoThreads b 5000 wds5k_0 wds5k_1)
+        , env (Bloom.new (SipKey 11 22) 3 24) $ \ ~b -> 
+           bench "bigInsertLookup 15k ops across two threads (8MB)" $ whnfIO (largeInsertQueryBenchTwoThreads b 5000 wds5k_0 wds5k_1)
+        , env (Bloom.new (SipKey 11 22) 3 27) $ \ ~b -> 
+           bench "bigInsertLookup 15k ops across two threads (64MB)" $ whnfIO (largeInsertQueryBenchTwoThreads b 5000 wds5k_0 wds5k_1)
+        -}
+        let benches b = [
+                bench "10K inserts, across 2 threads" $ whnfIO $ manyInsertsTwoThreads b wds5k_0 wds5k_1
+              , bench "10K lookups, across 2 threads" $ whnfIO $ manyLookupsTwoThreads b wds5k_0 wds5k_1
+              ]
+         in
+            [ env (Bloom.new (SipKey 11 22) 3 12) $ \ ~b -> 
+                bgroup "4096" (benches b)
+            , env (Bloom.new (SipKey 11 22) 3 14) $ \ ~b -> 
+                bgroup "16384" (benches b)
+            , env (Bloom.new (SipKey 11 22) 3 16) $ \ ~b -> 
+                bgroup "65536" (benches b)
+            , env (Bloom.new (SipKey 11 22) 3 20) $ \ ~b -> 
+                bgroup "1MB" (benches b)
+            , env (Bloom.new (SipKey 11 22) 3 24) $ \ ~b -> 
+                bgroup "8MB" (benches b)
+            , env (Bloom.new (SipKey 11 22) 3 27) $ \ ~b -> 
+                bgroup "64MB" (benches b)
+            ]
+      , bgroup "lookup insert" [
           bench "siphash64_1_3 for comparison" $ whnf (siphash64_1_3 (SipKey 1 1)) (1::Int)
 
           -- best case, with no cache effects (I think):
@@ -144,6 +215,71 @@ unionBench bigl littlel = do
     b1 <- Bloom.new (SipKey 1 1) 3 bigl
     b2 <- Bloom.new (SipKey 1 1) 3 littlel
     b1 `Bloom.unionInto` b2
+
+
+instance NFData (BloomFilter a) where
+  rnf _ = ()
+
+{-
+-- TODO fix both of these and compare with Set/HashSet (wrapped in IORef or MVar for second)
+largeInsertQueryBench :: Bloom.BloomFilter T.Text -> [T.Text] -> [T.Text] -> IO ()
+largeInsertQueryBench b payload antipayload = do
+  forM_ payload $ Bloom.insert b
+  forM_ (zip payload antipayload) $ \(x,y)-> do
+    --- can't test, since we're re-using bloom:
+    _xOk <- Bloom.lookup b x
+    _yOk <- Bloom.lookup b y  -- usually False
+    -- unless (xOk) $ error "largeInsertQueryBench"
+    return ()
+
+largeInsertQueryBenchTwoThreads :: Bloom.BloomFilter T.Text -> Int -> [T.Text] -> [T.Text] -> IO ()
+largeInsertQueryBenchTwoThreads b length_payload payload antipayload = do
+  t0 <- newEmptyMVar
+  t1 <- newEmptyMVar
+  let (payload0,payload1) = splitAt (length_payload `div` 2) payload
+  let (antipayload0,antipayload1) = splitAt (length_payload `div` 2) antipayload
+
+  let go pld antpld v = do
+          forM_ pld $ Bloom.insert b
+          forM_ (zip pld antpld) $ \(x,y)-> do
+            _xOk <- Bloom.lookup b x
+            _yOk <- Bloom.lookup b y  -- usually False
+            -- unless (xOk) $ error "largeInsertQueryBench"
+            return ()
+          putMVar v ()
+  void $ forkIO $ go payload0 antipayload0 t0
+  void $ forkIO $ go payload1 antipayload1 t1
+  takeMVar t0 >> takeMVar t1
+  -}
+
+
+-- These are mostly to check cache behavior, and I don't expect it to matter
+-- whether a bloom filter was already "filled with elements" or not.
+manyInserts :: Bloom.BloomFilter T.Text -> [T.Text] -> IO ()
+manyInserts b payload = do
+  forM_ payload (void . Bloom.insert b)
+
+manyLookups :: Bloom.BloomFilter T.Text -> [T.Text] -> IO ()
+manyLookups b payload = do
+  forM_ payload (void . Bloom.lookup b)
+
+manyInsertsTwoThreads :: Bloom.BloomFilter T.Text -> [T.Text] -> [T.Text] -> IO ()
+manyInsertsTwoThreads b payload0 payload1 = do
+  t0 <- newEmptyMVar
+  t1 <- newEmptyMVar
+  let go pld v = manyInserts b pld >> putMVar v ()
+  void $ forkIO $ go payload0 t0
+  void $ forkIO $ go payload1 t1
+  takeMVar t0 >> takeMVar t1
+
+manyLookupsTwoThreads :: Bloom.BloomFilter T.Text -> [T.Text] -> [T.Text] -> IO ()
+manyLookupsTwoThreads b payload0 payload1 = do
+  t0 <- newEmptyMVar
+  t1 <- newEmptyMVar
+  let go pld v = manyLookups b pld >> putMVar v ()
+  void $ forkIO $ go payload0 t0
+  void $ forkIO $ go payload1 t1
+  takeMVar t0 >> takeMVar t1
 
 
 {-
