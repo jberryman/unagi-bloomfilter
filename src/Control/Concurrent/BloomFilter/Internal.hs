@@ -120,7 +120,7 @@ import Prelude hiding (lookup)
 data BloomFilter a = BloomFilter { key :: !SipKey
                                  , k :: !Int
                                  , hash64Enough :: Bool
-                                 -- ^ if we need no more than 64-bits we can use the faster 'siphash64'
+                                 -- ^ if we need no more than 64-bits we can use the faster 'siphash64_1_3'
                                  , l_minus1 :: !Word64
                                  , log2l :: !Int
                                  , arr :: !(P.MutableByteArray RealWorld)
@@ -267,7 +267,7 @@ setKMemberBits !wd !k' !h' =
 membershipWordAndBitsFor :: (Hashable a)=> BloomFilter a -> a -> (Int, Int)
 {-# INLINE membershipWordAndBitsFor #-}
 membershipWordAndBitsFor bloom@(BloomFilter{..}) a
-    | hash64Enough = membershipWordAndBits64  (siphash64  key a) bloom
+    | hash64Enough = membershipWordAndBits64  (siphash64_1_3  key a) bloom
     | otherwise    = membershipWordAndBits128 (siphash128 key a) bloom
 
 

@@ -68,7 +68,7 @@ main = do
         , bench "membershipWordAndBits128" $ nf (membershipWordAndBits128 (Hash128 1 1)) b_13_20
         ],
       bgroup "lookup insert" [
-          bench "siphash64 for comparison" $ whnf (siphash64 (SipKey 1 1)) (1::Int)
+          bench "siphash64_1_3 for comparison" $ whnf (siphash64_1_3 (SipKey 1 1)) (1::Int)
 
           -- best case, with no cache effects (I think):
         , bench "lookup (64)" $ whnfIO (Bloom.lookup b_5_20 (1::Int))
@@ -87,7 +87,7 @@ main = do
 
         ],
       bgroup "comparisons micro" [
-          bench "(just siphash64 on txt for below)" $ whnf (siphash64 (SipKey 1 1)) ("orange"::T.Text)
+          bench "(just siphash64_1_3 on txt for below)" $ whnf (siphash64_1_3 (SipKey 1 1)) ("orange"::T.Text)
         , bench "Bloom.insert (64)" $ whnfIO (Bloom.insert b_text txt)
         {- I was concerned that the above might not be valid (perhaps the
          - hashing of the Text value was getting reused?), but the following
@@ -100,8 +100,8 @@ main = do
         , bench "Bloom.insert (64)(validation3)" $ whnfIO (Bloom.insert b_text "ora")
         , bench "Bloom.insert (64)(validation4)" $ whnf (bloomInsertPure1 b_text) "ora"
         , bench "Bloom.insert (64)(validation5)" $ whnf (bloomInsertPure2 b_text) "ora"
-        , bench "(validation orange)" $ whnf (siphash64 (SipKey 1 1)) ("orange"::T.Text)
-        , bench "(validation ora)" $ whnf (siphash64 (SipKey 1 1)) ("ora"::T.Text)
+        , bench "(validation orange)" $ whnf (siphash64_1_3 (SipKey 1 1)) ("orange"::T.Text)
+        , bench "(validation ora)" $ whnf (siphash64_1_3 (SipKey 1 1)) ("ora"::T.Text)
         -}
 
         , bench "Set.insert into 10" $ whnf (\t-> Set.insert t set10) txt
