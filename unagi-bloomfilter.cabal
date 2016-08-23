@@ -56,7 +56,7 @@ library
   if flag(instrumented)
       ghc-options:      -fno-ignore-asserts
       -- TODO stacktraces don't seem to show anything useful. Maybe because of INLINEs?:
-      ghc-prof-options:  "-with-rtsopts=-xc" -fprof-auto -fprof-auto-calls
+      -- ghc-prof-options:  "-with-rtsopts=-xc" -fprof-auto -fprof-auto-calls
 
   exposed-modules:     Control.Concurrent.BloomFilter
                      , Control.Concurrent.BloomFilter.Internal
@@ -129,7 +129,7 @@ executable dev-example
        base
      , unagi-bloomfilter
 
- ghc-options: -ddump-to-file -ddump-simpl -dsuppress-module-prefixes -dsuppress-uniques -ddump-core-stats -ddump-inlinings
+ -- ghc-options: -ddump-to-file -ddump-simpl -dsuppress-module-prefixes -dsuppress-uniques -ddump-core-stats -ddump-inlinings
  ghc-options: -O2  -rtsopts  
   -- for ghc bug(?) https://ghc.haskell.org/trac/ghc/ticket/11263
  ghc-options: -fsimpl-tick-factor=200
