@@ -97,6 +97,11 @@ benchmark bench
       build-depends:   base
                      , criterion
                      , unagi-bloomfilter
+                     , unordered-containers
+                     , containers
+                     , text
+                     , deepseq
+                     , random
                      , hashabler
   else 
       buildable: False
