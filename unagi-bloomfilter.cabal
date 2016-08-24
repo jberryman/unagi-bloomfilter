@@ -54,6 +54,7 @@ library
   if flag(dev)
       CPP-Options:     -DEXPORT_INTERNALS
   if flag(instrumented)
+      CPP-Options:      -DASSERTIONS_ON
       ghc-options:      -fno-ignore-asserts
       -- TODO stacktraces don't seem to show anything useful. Maybe because of INLINEs?:
       -- ghc-prof-options:  "-with-rtsopts=-xc" -fprof-auto -fprof-auto-calls
@@ -132,7 +133,8 @@ executable dev-example
  -- ghc-options: -ddump-to-file -ddump-simpl -dsuppress-module-prefixes -dsuppress-uniques -ddump-core-stats -ddump-inlinings
  ghc-options: -O2  -rtsopts  
   -- for ghc bug(?) https://ghc.haskell.org/trac/ghc/ticket/11263
- ghc-options: -fsimpl-tick-factor=200
+  -- (had to bump once again for additional setKMemberBits unrolling) 
+ ghc-options: -fsimpl-tick-factor=1000
  
  -- Either do threaded for eventlogging and simple timing...
  -- ghc-options: -threaded -eventlog

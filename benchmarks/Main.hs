@@ -9,6 +9,7 @@ import Control.DeepSeq
 import Control.Monad
 import Control.Concurrent
 import qualified Data.Text as T
+import Data.List
 
 import Control.Concurrent.BloomFilter.Internal
 import qualified Control.Concurrent.BloomFilter as Bloom
@@ -74,9 +75,15 @@ main = do
 
       -- For comparing cache behavior with perf, against below:
       bgroup "HashSet" $
-        [ bench "10K insert" $ whnf (HashSet.fromList) textWords10k ],
+        [ bench "10K insert" $ whnf (HashSet.fromList) wds5k_0 
+        , env (return $ HashSet.fromList textWords10k) $ \ ~hs ->
+            bench "10K lookups on 5k elems" $ whnf (foldl1' (==) . map (\t->HashSet.member t hs)) textWords10k
+        ],
       bgroup "Set" $
-        [ bench "10K insert" $ whnf (Set.fromList) textWords10k ],
+        [ bench "10K insert" $ whnf (Set.fromList) textWords10k 
+        , env (return $ Set.fromList textWords10k) $ \ ~hs ->
+            bench "10K lookups on 5k elems" $ whnf (foldl1' (==) . map (\t->Set.member t hs)) textWords10k
+        ],
 
       bgroup "different sizes" $
         let benches b = [
@@ -137,6 +144,7 @@ main = do
       , bgroup "lookup insert" [
           bgroup "Int" [
               bench "siphash64_1_3 for comparison" $ whnf (siphash64_1_3 (SipKey 1 1)) (1::Int)
+            , bench "siphash128 for comparison" $ whnf (siphash128 (SipKey 1 1)) (1::Int)
             , env (Bloom.new (SipKey 1 1) 3 12) $ \ ~b->
               bgroup "3 12 (64-bit hash)" [
 
@@ -174,7 +182,8 @@ main = do
               ]
           ],
           bgroup "Text" [
-              bench "siphash64_1_3 for comparison" $ whnf (siphash64_1_3 (SipKey 1 1)) (txt)
+              bench "siphash64_1_3 for comparison" $ whnf (siphash64_1_3 (SipKey 1 1)) txt
+            , bench "siphash128 for comparison" $ whnf (siphash128 (SipKey 1 1)) txt
             , env (Bloom.new (SipKey 1 1) 3 12) $ \ ~b->
               bgroup "3 12 (64-bit hash)" [
 

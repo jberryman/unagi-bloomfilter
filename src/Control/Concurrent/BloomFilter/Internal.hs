@@ -32,6 +32,7 @@ module Control.Concurrent.BloomFilter.Internal (
     , log2lFromArraySize
     , assertionCanary
     , bytes64, unbytes64
+    , setKMemberBits, setKMemberBitsRolled
 # endif
     )
     where
@@ -55,10 +56,16 @@ import Control.Monad
 import Data.Word(Word64, Word8)
 import Prelude hiding (lookup)
 
+-- TODO try the stack limit trick to find space leak triggering OOM killer in llvm-compiled?
+--      get benchmarks for LLVM, FYI. and maybe document
+--      figure out how to get all that unfolding to happen, and see if it helps in 128-bit version
+--      try implementing that size estimation functionality
+
 -- Future operations:
 --   - memory-mapped bloomfilter for durability (which of ACID do we get?). See 'vector-mmap' package?
 --     - allow opening mmap-ed file directly from serialized form?
 --   - approximating number of items, and size of union and intersection
+--     - simply sample some number of words, in order to get the accuracy the user requests
 --   - freezing/pure/ST interface (e.g. Data.BloomFilter)
 --     - API: 
 --         - only allow writes in ST (copying for each write is awful)
@@ -256,15 +263,132 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
      in (memberWord, wordToOr)
 
 
-
+-- To promote pipelining, and inlining. This improves lookup and insert by
+-- ~15-30% faster depending on which benchmarks we look at and how we squint.
+-- We treat this like a macro and expect it to be reduced in the common case
+-- where 'k' is a compile-time literal.
 setKMemberBits :: Int -> Int -> Word64 -> (Int, Word64)
 {-# INLINE setKMemberBits #-}
-setKMemberBits !wd 0 h' = (wd, h')
-setKMemberBits !wd !k' !h' =
-    -- possible cast to 32-bit Int but we only need rightmost 5 or 6 bits:
-  let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits
-   in setKMemberBits (wd `uncheckedSetBit` memberBit) (k'-1) (h' `uncheckedShiftR` log2w)
+setKMemberBits !wd 1 h = 
+  ((wd `uncheckedSetBit` (maskLog2w h))
 
+  , h `uncheckedShiftR` (log2w*1)
+  )
+setKMemberBits !wd 2 h = 
+  (((wd `uncheckedSetBit` (maskLog2w h))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
+
+  , h `uncheckedShiftR` (log2w*2)
+  )
+setKMemberBits !wd 3 h = 
+  ((((wd `uncheckedSetBit` (maskLog2w h))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
+
+  , h `uncheckedShiftR` (log2w*3)
+  )
+setKMemberBits !wd 4 h = 
+  (((((wd `uncheckedSetBit` (maskLog2w h))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*3))))
+
+  , h `uncheckedShiftR` (log2w*4)
+  )
+setKMemberBits !wd 5 h = 
+  ((((((wd `uncheckedSetBit` (maskLog2w h))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*3))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*4))))
+
+  , h `uncheckedShiftR` (log2w*5)
+  )
+setKMemberBits !wd 6 h = 
+  (((((((wd `uncheckedSetBit` (maskLog2w h))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*3))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*4))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*5))))
+
+  , h `uncheckedShiftR` (log2w*6)
+  )
+{- TODO at this point we see a big performance hit in 7.10 (in e.g. "lookup insert/Int/3 12 (64-bit hash)/lookup x10")
+        presumably because the case is big enough that GHC does something different with it, but we need to look at core
+        to find out for sure. Maybe we can turn 'k' into an enumeration One | Two | Three at creation, and that might help
+setKMemberBits !wd 7 h = 
+  ((((((((wd `uncheckedSetBit` (maskLog2w h))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*3))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*4))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*5))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*6))))
+
+  , h `uncheckedShiftR` (log2w*7)
+  )
+setKMemberBits !wd 8 h = 
+  (((((((((wd `uncheckedSetBit` (maskLog2w h))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*3))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*4))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*5))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*6))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*7))))
+
+  , h `uncheckedShiftR` (log2w*8)
+  )
+setKMemberBits !wd 9 h = 
+  ((((((((((wd `uncheckedSetBit` (maskLog2w h))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*3))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*4))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*5))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*6))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*7))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*8))))
+
+  , h `uncheckedShiftR` (log2w*9)
+  )
+setKMemberBits !wd 10 h = 
+  (((((((((((wd `uncheckedSetBit` (maskLog2w h))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*3))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*4))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*5))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*6))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*7))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*8))))
+    `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*9))))
+
+  , h `uncheckedShiftR` (log2w*10)
+  )
+-}
+-- 10 is all we should ever need since 11*log2w is always > w. If we unroll to
+-- 10 this ought to be unreachable, in fact:
+setKMemberBits !wd !k !h = setKMemberBitsRolled wd k h where
+
+-- The non-unrolled version we fall back to, exposed for testing:
+setKMemberBitsRolled :: Int -> Int -> Word64 -> (Int, Word64)
+# ifdef ASSERTIONS_ON
+-- work around simplifier ticks exhausted bullshit, when compiling tests
+# else
+{-# INLINE setKMemberBitsRolled #-}
+# endif
+setKMemberBitsRolled !wd !k !h = go wd k h where
+  go wd' 0  h' = (wd', h')
+  go wd' k' h' = 
+      -- possible cast to 32-bit Int but we only need rightmost 5 or 6 bits:
+    let !memberBit = fromIntegral h' .&. maskLog2wRightmostBits
+     in go (wd' `uncheckedSetBit` memberBit) (k'-1) (h' `uncheckedShiftR` log2w)
+
+maskLog2w :: Word64 -> Int
+{-# INLINE maskLog2w #-}
+maskLog2w h = fromIntegral h .&. maskLog2wRightmostBits
 
 
 membershipWordAndBitsFor :: (Hashable a)=> BloomFilter a -> a -> (Int, Int)
