@@ -38,13 +38,8 @@ main = do
         then putStrLn "!!! WARNING !!!: Some benchmarks are only valid if more than 1 core is available"
         else return ()
     
-    b_5_20 <- Bloom.new (SipKey 1 1) 5 20
-    b_13_20 <- Bloom.new (SipKey 1 1) 13 20 -- needs 128
 
-    -- This has 0.3% fpr for 10000 elements, so I think can be fairly compared
-    b_text <- Bloom.new (SipKey 11 22) 3 12
-    let txt = "orange" :: T.Text
-
+    -- TODO make this a function will call in 'env'
     let g = mkStdGen 8973459
         chars = randoms g :: [Char]
         fakeWords = go chars
@@ -61,19 +56,20 @@ main = do
         (wds5k_0, wds5k_1) = splitAt 5000 textWords10k
     deepseq textWords10k $ return ()
 
-    let hashset10 = HashSet.fromList $ take 10 textWords10k
-    let hashset100 = HashSet.fromList $ take 100 textWords10k
-    let hashset10000 = HashSet.fromList $ take 10000 textWords10k
-    let set10 = Set.fromList $ take 10 textWords10k
-    let set100 = Set.fromList $ take 100 textWords10k
-    let set10000 = Set.fromList $ take 10000 textWords10k
+    let txt = "orange" :: T.Text
+        -- so half are in set and half are not:
+        txt10New, txt10Mix :: [T.Text]
+        txt10New = take 10 $ reverse textWords10k
+        txt10Mix = concatMap (\(x,y)->[x,y]) $ zip textWords10k (take 5 txt10New)
     
 
 
     defaultMain [
       bgroup "internals" [
-          bench "membershipWordAndBits64" $ nf (membershipWordAndBits64 (Hash64 1)) b_5_20
-        , bench "membershipWordAndBits128" $ nf (membershipWordAndBits128 (Hash128 1 1)) b_13_20
+          env (Bloom.new (SipKey 1 1) 5 20) $ \ ~b->
+            bench "membershipWordAndBits64" $ nf (membershipWordAndBits64 (Hash64 1)) b
+        , env (Bloom.new (SipKey 1 1) 13 20) $ \ ~b->
+            bench "membershipWordAndBits128" $ nf (membershipWordAndBits128 (Hash128 1 1)) b
         ],
 
       -- For comparing cache behavior with perf, against below:
@@ -139,65 +135,179 @@ main = do
                 bgroup "64MB" (benches b)
             ]
       , bgroup "lookup insert" [
-          bench "siphash64_1_3 for comparison" $ whnf (siphash64_1_3 (SipKey 1 1)) (1::Int)
+          bgroup "Int" [
+              bench "siphash64_1_3 for comparison" $ whnf (siphash64_1_3 (SipKey 1 1)) (1::Int)
+            , env (Bloom.new (SipKey 1 1) 3 12) $ \ ~b->
+              bgroup "3 12 (64-bit hash)" [
 
-          -- best case, with no cache effects (I think):
-        , bench "lookup (64)" $ whnfIO (Bloom.lookup b_5_20 (1::Int))
-        , bench "lookup x10 (64)" $ nfIO (mapM_ (Bloom.lookup b_5_20) [1..10])
-        , bench "lookup x100 (64)" $ nfIO (mapM_ (Bloom.lookup b_5_20) [1..100])
-        , bench "lookup (128)" $ whnfIO (Bloom.lookup b_13_20 (1::Int))
-        , bench "lookup x10 (128)" $ nfIO (mapM_ (Bloom.lookup b_13_20) [1..10])
-        , bench "lookup x100 (128)" $ nfIO (mapM_ (Bloom.lookup b_13_20) [1..100])
+                  -- best case, with no cache effects (I think):
+                  bench "lookup x1" $ whnfIO (Bloom.lookup b (1::Int))
+                , bench "lookup x10" $ nfIO (mapM_ (Bloom.lookup b) [1..10])
+                , bench "lookup x100" $ nfIO (mapM_ (Bloom.lookup b) [1..100])
 
-        , bench "insert (64)" $ whnfIO (Bloom.insert b_5_20 (1::Int))
-        , bench "insert x10 (64)" $ nfIO (mapM_ (Bloom.insert b_5_20) [1..10])
-        , bench "insert x100 (64)" $ nfIO (mapM_ (Bloom.insert b_5_20) [1..100])
-        , bench "insert (128)" $ whnfIO (Bloom.insert b_13_20 (1::Int))
-        , bench "insert x10 (128)" $ nfIO (mapM_ (Bloom.insert b_13_20) [1..10])
-        , bench "insert x100 (128)" $ nfIO (mapM_ (Bloom.insert b_13_20) [1..100])
+                , bench "insert x1" $ whnfIO (Bloom.insert b (1::Int))
+                , bench "insert x10" $ nfIO (mapM_ (Bloom.insert b) [1..10])
+                , bench "insert x100" $ nfIO (mapM_ (Bloom.insert b) [1..100])
+              ]
+            , env (Bloom.new (SipKey 1 1) 5 20) $ \ ~b->
+              bgroup "5 20 (64-bit hash)" [
+
+                  -- best case, with no cache effects (I think):
+                  bench "lookup x1" $ whnfIO (Bloom.lookup b (1::Int))
+                , bench "lookup x10" $ nfIO (mapM_ (Bloom.lookup b) [1..10])
+                , bench "lookup x100" $ nfIO (mapM_ (Bloom.lookup b) [1..100])
+
+                , bench "insert x1" $ whnfIO (Bloom.insert b (1::Int))
+                , bench "insert x10" $ nfIO (mapM_ (Bloom.insert b) [1..10])
+                , bench "insert x100" $ nfIO (mapM_ (Bloom.insert b) [1..100])
+              ]
+            , env (Bloom.new (SipKey 1 1) 13 20) $ \ ~b->
+              bgroup "13 20 (128-bit hash)" [
+
+                  bench "lookup x1" $ whnfIO (Bloom.lookup b (1::Int))
+                , bench "lookup x10" $ nfIO (mapM_ (Bloom.lookup b) [1..10])
+                , bench "lookup x100" $ nfIO (mapM_ (Bloom.lookup b) [1..100])
+
+                , bench "insert x1" $ whnfIO (Bloom.insert b (1::Int))
+                , bench "insert x10" $ nfIO (mapM_ (Bloom.insert b) [1..10])
+                , bench "insert x100" $ nfIO (mapM_ (Bloom.insert b) [1..100])
+              ]
+          ],
+          bgroup "Text" [
+              bench "siphash64_1_3 for comparison" $ whnf (siphash64_1_3 (SipKey 1 1)) (txt)
+            , env (Bloom.new (SipKey 1 1) 3 12) $ \ ~b->
+              bgroup "3 12 (64-bit hash)" [
+
+                  -- best case, with no cache effects (I think):
+                  bench "lookup x1" $ whnfIO (Bloom.lookup b txt)
+                , bench "lookup x10" $ nfIO (mapM_ (Bloom.lookup b) (take 10 textWords10k))
+                , bench "lookup x100" $ nfIO (mapM_ (Bloom.lookup b) (take 100 textWords10k))
+
+                , bench "insert x1" $ whnfIO (Bloom.insert b txt)
+                , bench "insert x10" $ nfIO (mapM_ (Bloom.insert b) (take 10 textWords10k))
+                , bench "insert x100" $ nfIO (mapM_ (Bloom.insert b) (take 100 textWords10k))
+              ]
+            , env (Bloom.new (SipKey 1 1) 5 20) $ \ ~b->
+              bgroup "5 20 (64-bit hash)" [
+
+                  -- best case, with no cache effects (I think):
+                  bench "lookup x1" $ whnfIO (Bloom.lookup b txt)
+                , bench "lookup x10" $ nfIO (mapM_ (Bloom.lookup b) (take 10 textWords10k))
+                , bench "lookup x100" $ nfIO (mapM_ (Bloom.lookup b) (take 100 textWords10k))
+
+                , bench "insert x1" $ whnfIO (Bloom.insert b txt)
+                , bench "insert x10" $ nfIO (mapM_ (Bloom.insert b) (take 10 textWords10k))
+                , bench "insert x100" $ nfIO (mapM_ (Bloom.insert b) (take 100 textWords10k))
+              ]
+            , env (Bloom.new (SipKey 1 1) 13 20) $ \ ~b->
+              bgroup "13 20 (128-bit hash)" [
+
+                  bench "lookup x1" $ whnfIO (Bloom.lookup b txt)
+                , bench "lookup x10" $ nfIO (mapM_ (Bloom.lookup b) (take 10 textWords10k))
+                , bench "lookup x100" $ nfIO (mapM_ (Bloom.lookup b) (take 100 textWords10k))
+
+                , bench "insert x1" $ whnfIO (Bloom.insert b txt)
+                , bench "insert x10" $ nfIO (mapM_ (Bloom.insert b) (take 10 textWords10k))
+                , bench "insert x100" $ nfIO (mapM_ (Bloom.insert b) (take 100 textWords10k))
+              ]
+          ]
 
         ],
-      bgroup "comparisons micro" [
+  --
+  -- TODO check  TO SEE HOW THINGS LOOK BEFORE AND AFTER UNFOLDING CHANGE,
+  --             MAYBE TRY DOING inserts/lookups x10 here.
+  --   3x12 insert went from  51.8 to 49  (below)
+  --   5x20 insert went from  59.1 to 47.6 (in "lookup insert")
+      bgroup "comparisons micro x1 " [
           bench "(just siphash64_1_3 on txt for below)" $ whnf (siphash64_1_3 (SipKey 1 1)) ("orange"::T.Text)
-        , bench "Bloom.insert (64)" $ whnfIO (Bloom.insert b_text txt)
-        {- I was concerned that the above might not be valid (perhaps the
-         - hashing of the Text value was getting reused?), but the following
-         - convinced me it's all right; we can see differences in size of input
-         - string reflected in all these benchmarks. I believe bloomInsertPure1
-         - reflects the inability to inline Hashable instance machinery (since
-         - it must remain polymorphic.
-        , bench "Bloom.insert (64)(validation1)" $ whnf (bloomInsertPure1 b_text) txt
-        , bench "Bloom.insert (64)(validation2)" $ whnf (bloomInsertPure2 b_text) txt
-        , bench "Bloom.insert (64)(validation3)" $ whnfIO (Bloom.insert b_text "ora")
-        , bench "Bloom.insert (64)(validation4)" $ whnf (bloomInsertPure1 b_text) "ora"
-        , bench "Bloom.insert (64)(validation5)" $ whnf (bloomInsertPure2 b_text) "ora"
-        , bench "(validation orange)" $ whnf (siphash64_1_3 (SipKey 1 1)) ("orange"::T.Text)
-        , bench "(validation ora)" $ whnf (siphash64_1_3 (SipKey 1 1)) ("ora"::T.Text)
-        -}
+        -- This has 0.3% fpr for 10000 elements, so I think can be fairly compared
+        , env (Bloom.new (SipKey 11 22) 3 12) $ \ ~b_text->
+          bgroup "unagi-bloomfilter 3 12" [
+              bench "insert" $ whnfIO (Bloom.insert b_text txt)
+            {- I was concerned that the above might not be valid (perhaps the
+             - hashing of the Text value was getting reused?), but the following
+             - convinced me it's all right; we can see differences in size of input
+             - string reflected in all these benchmarks. I believe bloomInsertPure1
+             - reflects the inability to inline Hashable instance machinery (since
+             - it must remain polymorphic.
+            , bench "Bloom.insert (64)(validation1)" $ whnf (bloomInsertPure1 b_text) txt
+            , bench "Bloom.insert (64)(validation2)" $ whnf (bloomInsertPure2 b_text) txt
+            , bench "Bloom.insert (64)(validation3)" $ whnfIO (Bloom.insert b_text "ora")
+            , bench "Bloom.insert (64)(validation4)" $ whnf (bloomInsertPure1 b_text) "ora"
+            , bench "Bloom.insert (64)(validation5)" $ whnf (bloomInsertPure2 b_text) "ora"
+            , bench "(validation orange)" $ whnf (siphash64_1_3 (SipKey 1 1)) ("orange"::T.Text)
+            , bench "(validation ora)" $ whnf (siphash64_1_3 (SipKey 1 1)) ("ora"::T.Text)
+            -}
+            , bench "lookup" $ nfIO (Bloom.lookup b_text txt)
+          ]
 
-        , bench "Set.insert into 10" $ whnf (\t-> Set.insert t set10) txt
-        , bench "Set.insert into 100" $ whnf (\t-> Set.insert t set100) txt
-        , bench "Set.insert into 10000" $ whnf (\t-> Set.insert t set10000) txt
-
-        , bench "HashSet.insert into 10" $ whnf (\t-> HashSet.insert t hashset10) txt
-        , bench "HashSet.insert into 100" $ whnf (\t-> HashSet.insert t hashset100) txt
-        , bench "HashSet.insert into 10000" $ whnf (\t-> HashSet.insert t hashset10000) txt
-
-        , bench "Bloom.lookup (64)" $ whnfIO (Bloom.lookup b_text txt)
-
-        , bench "Set.member of 10" $ whnf (\t-> Set.member t set10) txt
-        , bench "Set.member of 100" $ whnf (\t-> Set.member t set100) txt
-        , bench "Set.member of 10000" $ whnf (\t-> Set.member t set10000) txt
-
-        , bench "HashSet.member of 10" $ whnf (\t-> HashSet.member t hashset10) txt
-        , bench "HashSet.member of 100" $ whnf (\t-> HashSet.member t hashset100) txt
-        , bench "HashSet.member of 10000" $ whnf (\t-> HashSet.member t hashset10000) txt
+        , env (return $ HashSet.fromList $ take 10 textWords10k) $ \ ~hashset10->
+          bgroup "HashSet Text (10)" [
+              bench "insert" $ whnf (\t-> HashSet.insert t hashset10) txt
+            , bench "member" $ nf (\t-> HashSet.member t hashset10) txt
+          ]
+        , env (return $ HashSet.fromList $ take 100 textWords10k) $ \ ~hashset100->
+          bgroup "HashSet Text (100)" [
+              bench "insert" $ whnf (\t-> HashSet.insert t hashset100) txt
+            , bench "member" $ nf (\t-> HashSet.member t hashset100) txt
+          ]
+        , env (return $ HashSet.fromList $ take 10000 textWords10k) $ \ ~hashset10000->
+          bgroup "HashSet Text (10000)" [
+              bench "insert" $ whnf (\t-> HashSet.insert t hashset10000) txt
+            , bench "member" $ nf (\t-> HashSet.member t hashset10000) txt
+          ]
+        , env (return $ Set.fromList $ take 10 textWords10k) $ \ ~set10->
+          bgroup "Set Text (10)" [
+              bench "insert" $ whnf (\t-> Set.insert t set10) txt
+            , bench "member" $ nf (\t-> Set.member t set10) txt
+          ]
+        , env (return $ Set.fromList $ take 100 textWords10k) $ \ ~set100->
+          bgroup "Set Text (100)" [
+              bench "insert" $ whnf (\t-> Set.insert t set100) txt
+            , bench "member" $ nf (\t-> Set.member t set100) txt
+          ]
+        , env (return $ Set.fromList $ take 10000 textWords10k) $ \ ~set10000->
+          bgroup "Set Text (10000)" [
+              bench "insert" $ whnf (\t-> Set.insert t set10000) txt
+            , bench "member" $ nf (\t-> Set.member t set10000) txt
+          ]
       ],
+      
+      bgroup "comparisons micro x10" [
+        -- This has 0.3% fpr for 10000 elements, so I think can be fairly compared
+          env (Bloom.new (SipKey 11 22) 3 12) $ \ ~b_text->
+          bgroup "unagi-bloomfilter 3 12" [
+              bench "insert" $ whnfIO (mapM (Bloom.insert b_text) txt10New)
+            , bench "lookup" $ nfIO (mapM (Bloom.lookup b_text) txt10Mix)
+          ]
+
+        , env (return $ HashSet.fromList $ take 100 textWords10k) $ \ ~hashset100->
+          bgroup "HashSet Text (100)" [
+              bench "insert" $ whnf (foldr (\t s-> HashSet.insert t s) hashset100) txt10New
+            , bench "member" $ nf (map $ \t-> HashSet.member t hashset100) txt10Mix
+          ]
+        , env (return $ HashSet.fromList $ take 10000 textWords10k) $ \ ~hashset10000->
+          bgroup "HashSet Text (10000)" [
+              bench "insert" $ whnf (foldr (\t s-> HashSet.insert t s) hashset10000) txt10New
+            , bench "member" $ nf (map $ \t-> HashSet.member t hashset10000) txt10Mix
+          ]
+        , env (return $ Set.fromList $ take 100 textWords10k) $ \ ~set100->
+          bgroup "Set Text (100)" [
+              bench "insert" $ whnf (foldr (\t s-> Set.insert t s) set100) txt10New
+            , bench "member" $ nf (map $ \t-> Set.member t set100) txt10Mix
+          ]
+        , env (return $ Set.fromList $ take 10000 textWords10k) $ \ ~set10000->
+          bgroup "Set Text (10000)" [
+              bench "insert" $ whnf (foldr (\t s-> Set.insert t s) set10000) txt10New
+            , bench "member" $ nf (map $ \t-> Set.member t set10000) txt10Mix
+          ]
+      ],
+
       bgroup "comparisons big" [
+          -- TODO large random lookup and insert benchmark, comparing with single-thread and then with work split.
+          --      make this how we compare as well?
+          --      Do this for various types of elements
       ],
-      -- TODO large random lookup and insert benchmark, comparing with single-thread and then with work split.
-      --      make this how we compare as well?
-      --      Do this for various types of elements
 
       bgroup "combining and creation" [
         -- These timings can be subtracted from union timings:
@@ -290,4 +400,8 @@ bloomInsertPure1 b = unsafePerformIO . Bloom.insert b
 
 bloomInsertPure2 :: Hashable a => BloomFilter a -> a -> Bool
 bloomInsertPure2 b = unsafePerformIO . Bloom.insert b
+
+{-# NOINLINE bloomInsertPure3 #-}
+bloomInsertPure3 :: BloomFilter Text -> Text -> Bool
+bloomInsertPure3 b = unsafePerformIO . Bloom.insert b
 -}
