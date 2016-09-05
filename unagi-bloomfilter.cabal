@@ -10,9 +10,10 @@ description:
   SipHash so can safely consume untrusted inputs.
   .
   The implementation here compares favorably with traditional set
-  implementations in a single-threaded context:
+  implementations in a single-threaded context, e.g. here are 10 inserts or
+  lookups compared across some sets of different sizes:
   .
-  <<http://i.imgur.com/t3vroKE.png>>
+  <<http://i.imgur.com/gei1LW4.png>>
   .
   With the llvm backend benchmarks take around 75-85% of the runtime of the
   native code gen.
