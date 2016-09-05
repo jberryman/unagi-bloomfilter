@@ -12,6 +12,7 @@ import Data.Bits
 import qualified Data.ByteString as B
 import Control.Monad
 import Control.Concurrent
+import System.IO
 import Data.Word
 import Control.Exception
 import Text.Printf
@@ -22,6 +23,7 @@ import Prelude
 
 main :: IO ()
 main = do
+    hSetBuffering stdout NoBuffering
 #  ifdef ASSERTIONS_ON
     checkAssertionsOn
 #  else
@@ -37,6 +39,8 @@ main = do
              fromBits64 ((replicate 62 '0') ++ "11") == 3) $
         error "fromBits64 helper borked"
 
+    -- make output to keep travis happy:
+    void $ forkIO $ forever (putStr "." >> threadDelay (1000*1000))
 
     -- uncheckedSetBit: --------
     quickCheckErr 10000 $ \(Large i) ->
