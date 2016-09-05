@@ -14,6 +14,9 @@ description:
   .
   <<http://i.imgur.com/t3vroKE.png>>
   .
+  With the llvm backend benchmarks take around 75-85% of the runtime of the
+  native code gen.
+  .
   Unfortunately writes in particular don't seem to scale currently; i.e.
   distributing writes across multiple threads may be /slower/ than in a
   single-threaded context, because of memory effects. We plan to export
@@ -104,6 +107,8 @@ benchmark bench
   main-is:             Main.hs
   ghc-options:         -Wall -O2 -threaded -funbox-strict-fields
   ghc-options:         "-with-rtsopts=-N -A50M -qa"
+  ghc-options:         -rtsopts
+  ghc-prof-options:    -fprof-auto -fprof-auto-calls
   hs-source-dirs:      benchmarks
   if flag(instrumented)
       CPP-Options:     -DASSERTIONS_ON

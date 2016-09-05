@@ -56,10 +56,6 @@ import Control.Monad
 import Data.Word(Word64, Word8)
 import Prelude hiding (lookup)
 
--- TODO try the stack limit trick to find space leak triggering OOM killer in llvm-compiled?
---      get benchmarks for LLVM, FYI. and maybe document
---      figure out how to get all that unfolding to happen, and see if it helps in 128-bit version
---      try implementing that size estimation functionality
 
 -- Future operations:
 --   - memory-mapped bloomfilter for durability (which of ACID do we get?). See 'vector-mmap' package?
@@ -269,25 +265,25 @@ membershipWordAndBits128 (Hash128 h_0 h_1) = \(BloomFilter{ .. }) ->
 -- where 'k' is a compile-time literal.
 setKMemberBits :: Int -> Int -> Word64 -> (Int, Word64)
 {-# INLINE setKMemberBits #-}
-setKMemberBits !wd 1 h = 
+setKMemberBits !wd 1 !h = 
   ((wd `uncheckedSetBit` (maskLog2w h))
 
   , h `uncheckedShiftR` (log2w*1)
   )
-setKMemberBits !wd 2 h = 
+setKMemberBits !wd 2 !h = 
   (((wd `uncheckedSetBit` (maskLog2w h))
     `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
 
   , h `uncheckedShiftR` (log2w*2)
   )
-setKMemberBits !wd 3 h = 
+setKMemberBits !wd 3 !h = 
   ((((wd `uncheckedSetBit` (maskLog2w h))
     `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
     `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
 
   , h `uncheckedShiftR` (log2w*3)
   )
-setKMemberBits !wd 4 h = 
+setKMemberBits !wd 4 !h = 
   (((((wd `uncheckedSetBit` (maskLog2w h))
     `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
     `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
@@ -295,7 +291,7 @@ setKMemberBits !wd 4 h =
 
   , h `uncheckedShiftR` (log2w*4)
   )
-setKMemberBits !wd 5 h = 
+setKMemberBits !wd 5 !h = 
   ((((((wd `uncheckedSetBit` (maskLog2w h))
     `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
     `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
@@ -304,7 +300,7 @@ setKMemberBits !wd 5 h =
 
   , h `uncheckedShiftR` (log2w*5)
   )
-setKMemberBits !wd 6 h = 
+setKMemberBits !wd 6 !h = 
   (((((((wd `uncheckedSetBit` (maskLog2w h))
     `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` log2w)))
     `uncheckedSetBit` (maskLog2w (h `uncheckedShiftR` (log2w*2))))
@@ -388,7 +384,7 @@ setKMemberBitsRolled !wd !k !h = go wd k h where
 
 maskLog2w :: Word64 -> Int
 {-# INLINE maskLog2w #-}
-maskLog2w h = fromIntegral h .&. maskLog2wRightmostBits
+maskLog2w !h = fromIntegral h .&. maskLog2wRightmostBits
 
 
 membershipWordAndBitsFor :: (Hashable a)=> BloomFilter a -> a -> (Int, Int)
@@ -424,18 +420,18 @@ log2w | sIZEOF_INT == 8 = 6
 
 uncheckedSetBit :: Int -> Int -> Int
 {-# INLINE uncheckedSetBit #-}
-uncheckedSetBit x i = x .|. (1 `uncheckedShiftL` i)
+uncheckedSetBit !x !i = x .|. (1 `uncheckedShiftL` i)
 
 uncheckedShiftR :: (Num a, FiniteBits a, Ord a) => a -> Int -> a
 {-# INLINE uncheckedShiftR #-}
-uncheckedShiftR a = \x->
+uncheckedShiftR !a = \ !x->
   assert (a >= 0) $ -- make sure we don't smear sign w/ a bad fromIntegral cast
   assert (x < finiteBitSize a) $
   assert (x >= 0) $
     a `BitsHidden.unsafeShiftR` x
 uncheckedShiftL :: (Num a, FiniteBits a, Ord a) => a -> Int -> a
 {-# INLINE uncheckedShiftL #-}
-uncheckedShiftL a = \x->
+uncheckedShiftL !a = \ !x->
   assert (a >= 0) $
   assert (x < finiteBitSize a) $
   assert (x >= 0) $
