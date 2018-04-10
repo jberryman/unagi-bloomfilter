@@ -417,6 +417,16 @@ serializationTests = do
 
   serializeRoundtripsTest
   serializeGoldenTests
+  issue2Test
+
+-- Issue #2: this triggered a bug from a careless bit of floating point arithmetic:
+issue2Test :: IO ()
+issue2Test = do
+  sipKey <- pure $ (Bloom.SipKey 1 1)
+  bloom <- Bloom.new sipKey 3 26 :: IO (Bloom.BloomFilter String)
+  bloomBS <- Bloom.serialize bloom
+  void $ (Bloom.deserialize sipKey bloomBS :: IO (Bloom.BloomFilter String))
+
 
 -- For validating that we can serialize and deserialize across machines, and
 -- try to handle forwards compatibility (later).

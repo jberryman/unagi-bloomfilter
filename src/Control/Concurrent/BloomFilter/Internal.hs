@@ -208,11 +208,13 @@ log2lFromArraySize :: Int{-bytes-} -> IO Int
 log2lFromArraySize sz = 
   either throwBloom return $ do
     let dataSzBytes = sz - sIZEOF_METADATA
-        log2lFloat = logBase 2 ((fromIntegral dataSzBytes / fromIntegral sIZEOF_INT) :: Float)
-        log2l = floor log2lFloat
+        (dataSzWds, z) = dataSzBytes `quotRem` sIZEOF_INT
+        isPowerOfTwo n = n .&. (n - 1) == 0 -- when n > 0
+
     unless (dataSzBytes >= sIZEOF_INT) $ Left "Array is not large enough to be a serialized bloom filter"
-    unless (fromIntegral log2l == log2lFloat) $ Left "Array is an unexpected size for a serialized bloom filter"
-    return log2l
+    unless (isPowerOfTwo dataSzWds && z == 0) $ Left "Array is an unexpected size for a serialized bloom filter"
+    return $!
+      countTrailingZeros dataSzWds -- logBase 2, when isPowerOfTwo
   
 
 
