@@ -214,7 +214,7 @@ log2lFromArraySize sz =
     unless (dataSzBytes >= sIZEOF_INT) $ Left "Array is not large enough to be a serialized bloom filter"
     unless (isPowerOfTwo dataSzWds && z == 0) $ Left "Array is an unexpected size for a serialized bloom filter"
     return $!
-      countTrailingZeros dataSzWds -- logBase 2, when isPowerOfTwo
+      popCount (dataSzWds - 1) -- logBase 2, when isPowerOfTwo dataSzWds
   
 
 
